@@ -1,0 +1,86 @@
+// Must be the first import — loads .env into process.env before any
+// module reads config. In production, real env vars are used directly
+// and dotenv is a safe no-op if no .env file exists.
+import 'dotenv/config'
+
+import { buildApp } from './app'
+import { config } from './core/config'
+import { logger } from './core/logger'
+import { redisConnection } from './core/queue'
+import { createNotificationWorker } from './workers/notification.worker'
+import { createPromotionWorker } from './workers/promotion.worker'
+import { db } from './core/db'
+
+async function start() {
+  // ── DB connectivity check ─────────────────────────────────────────────────
+  const dbUrl = process.env['DATABASE_URL']
+  if (!dbUrl) {
+    logger.error('DATABASE_URL is not set — cannot start without a database')
+    process.exit(1)
+  }
+  // Detect the most common Supabase misconfiguration: using the pooler endpoint
+  // (*.pooler.supabase.com) without the required "postgres.PROJECT_REF" username.
+  // Direct connection (db.*.supabase.co:5432) is correct for a persistent server.
+  if (dbUrl.includes('pooler.supabase.com') && !dbUrl.match(/postgres\.[a-z]+/)) {
+    logger.error(
+      'DATABASE_URL looks like a Supabase pooler URL with wrong username format. ' +
+      'Use the direct connection: postgresql://postgres:PASSWORD@db.PROJECT_REF.supabase.co:5432/postgres ' +
+      'OR fix the pooler username to "postgres.PROJECT_REF".',
+    )
+    process.exit(1)
+  }
+
+  try {
+    await db.$connect()
+    logger.info('Database connected')
+  } catch (err) {
+    logger.error(
+      { err, urlHost: new URL(dbUrl).hostname },
+      'Database connection failed — verify DATABASE_URL in Railway Variables',
+    )
+    process.exit(1)
+  }
+
+  const app = await buildApp()
+
+  // ── Background workers (require Redis) ───────────────────────────────────
+  // Workers are skipped when REDIS_URL is not configured (e.g. Railway
+  // without a Redis add-on). The HTTP server still starts normally.
+  let notificationWorker: Awaited<ReturnType<typeof createNotificationWorker>> | null = null
+  let promotionWorker:    Awaited<ReturnType<typeof createPromotionWorker>>    | null = null
+
+  if (config.REDIS_URL) {
+    notificationWorker = createNotificationWorker()
+    promotionWorker    = createPromotionWorker()
+    logger.info('Background workers started')
+  } else {
+    logger.warn('REDIS_URL not set — background workers disabled')
+  }
+
+  try {
+    const address = await app.listen({ port: config.PORT, host: config.HOST })
+    logger.info({ address, env: config.NODE_ENV }, 'Server started')
+  } catch (err) {
+    logger.error({ err }, 'Failed to start server')
+    process.exit(1)
+  }
+
+  // ── Graceful shutdown ─────────────────────────────────────────────────────
+  const shutdown = async (signal: string) => {
+    logger.info({ signal }, 'Shutdown signal received')
+
+    if (notificationWorker) await notificationWorker.close()
+    if (promotionWorker)    await promotionWorker.close()
+    if (config.REDIS_URL)   await redisConnection.quit()
+
+    await app.close()
+    logger.info('Server closed')
+
+    process.exit(0)
+  }
+
+  process.on('SIGINT',  () => void shutdown('SIGINT'))
+  process.on('SIGTERM', () => void shutdown('SIGTERM'))
+}
+
+void start()

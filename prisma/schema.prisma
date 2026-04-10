@@ -1,0 +1,372 @@
+// =============================================================================
+// AppMarket — Prisma Schema
+// Full domain model. All domains defined upfront per approved architecture plan.
+// =============================================================================
+
+generator client {
+  provider      = "prisma-client-js"
+  binaryTargets = ["native", "debian-openssl-3.0.x", "debian-openssl-1.1.x"]
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ─── ENUMS ────────────────────────────────────────────────────────────────────
+
+enum UserRole {
+  USER
+  CREATOR
+  MODERATOR
+  ADMIN
+}
+
+enum AppStatus {
+  DRAFT
+  SUBMITTED
+  IN_REVIEW
+  APPROVED
+  REJECTED
+  PUBLISHED
+  ARCHIVED
+}
+
+enum AssetType {
+  ICON
+  SCREENSHOT
+  PROMO_VIDEO
+  BANNER
+}
+
+enum ReviewStatus {
+  PENDING
+  IN_PROGRESS
+  APPROVED
+  REJECTED
+  NEEDS_CHANGES
+}
+
+enum PromotionStatus {
+  PENDING_APPROVAL
+  APPROVED
+  REJECTED
+  IN_PROGRESS
+  COMPLETED
+  FAILED
+  CANCELLED
+}
+
+enum RunStatus {
+  PENDING
+  RUNNING
+  SUCCESS
+  FAILED
+}
+
+// ─── AUTH / USERS ─────────────────────────────────────────────────────────────
+
+model User {
+  id            String    @id @default(uuid())
+  email         String    @unique
+  passwordHash  String?
+  googleId      String?   @unique
+  avatarUrl     String?
+  role          UserRole  @default(USER)
+  emailVerified Boolean   @default(false)
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+  deletedAt     DateTime? // soft delete
+
+  creator            Creator?
+  favorites          Favorite[]
+  recentlyUsed       RecentlyUsed[]
+  launchEvents       LaunchEvent[]
+  moderationReviews  ModerationReview[] @relation("Reviewer")
+  promotionApprovals PromotionJob[]     @relation("ApprovedBy")
+  auditLogs          AuditLog[]         @relation("PerformedBy")
+  refreshTokens      RefreshToken[]
+  appReviews         AppReview[]
+}
+
+model RefreshToken {
+  id        String    @id @default(uuid())
+  userId    String
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  tokenHash String    @unique
+  expiresAt DateTime
+  createdAt DateTime  @default(now())
+  revokedAt DateTime?
+}
+
+// ─── CREATORS ─────────────────────────────────────────────────────────────────
+
+model Creator {
+  id          String   @id @default(uuid())
+  userId      String   @unique
+  user        User     @relation(fields: [userId], references: [id])
+  displayName String
+  bio         String?
+  website     String?
+  avatarUrl   String?
+  verified    Boolean  @default(false)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  apps App[]
+}
+
+// ─── APPS ─────────────────────────────────────────────────────────────────────
+
+model App {
+  id          String    @id @default(uuid())
+  creatorId   String
+  creator     Creator   @relation(fields: [creatorId], references: [id])
+  slug        String    @unique
+  name        String
+  tagline     String
+  description String
+  status      AppStatus @default(DRAFT)
+
+  // Active launch URL — denormalized from current AppVersion for fast reads
+  launchUrl String?
+
+  // Denormalized from assets for fast list rendering
+  iconUrl      String?
+  primaryColor String?   // hex e.g. "#14b8a6" — used for the live page header background
+  videoUrl     String?   // short promo video URL
+
+  categoryId String?
+  category   Category? @relation(fields: [categoryId], references: [id])
+
+  // Lifecycle timestamps — immutable audit trail
+  submittedAt DateTime?
+  approvedAt  DateTime?
+  rejectedAt  DateTime?
+  publishedAt DateTime?
+  archivedAt  DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  tags          AppTag[]
+  versions      AppVersion[]
+  assets        AppAsset[]
+  favorites     Favorite[]
+  recentlyUsed  RecentlyUsed[]
+  launchEvents  LaunchEvent[]
+  reviews       ModerationReview[]
+  appReviews    AppReview[]
+  promotionJobs PromotionJob[]
+
+  @@index([status])
+  @@index([creatorId])
+  @@index([categoryId])
+  @@index([slug])
+}
+
+// ─── APP VERSIONS ─────────────────────────────────────────────────────────────
+
+model AppVersion {
+  id            String   @id @default(uuid())
+  appId         String
+  app           App      @relation(fields: [appId], references: [id])
+  versionNumber String   // semver string e.g. "1.0.0"
+  launchUrl     String
+  changelog     String?
+  config        Json?    // launch config / embed options (flexible per app type)
+  createdAt     DateTime @default(now())
+
+  @@unique([appId, versionNumber])
+  @@index([appId])
+}
+
+// ─── APP ASSETS ───────────────────────────────────────────────────────────────
+
+model AppAsset {
+  id         String    @id @default(uuid())
+  appId      String
+  app        App       @relation(fields: [appId], references: [id])
+  type       AssetType
+  url        String    // public CDN / object storage URL
+  storageKey String    // internal S3 key for deletion and management
+  mimeType   String?
+  sizeBytes  Int?
+  width      Int?
+  height     Int?
+  sortOrder  Int       @default(0)
+  createdAt  DateTime  @default(now())
+
+  @@index([appId, type])
+}
+
+// ─── CATEGORIES ───────────────────────────────────────────────────────────────
+
+model Category {
+  id          String     @id @default(uuid())
+  name        String     @unique
+  slug        String     @unique
+  description String?
+  iconUrl     String?
+  sortOrder   Int        @default(0)
+  parentId    String?
+  parent      Category?  @relation("CategoryTree", fields: [parentId], references: [id])
+  children    Category[] @relation("CategoryTree")
+  apps        App[]
+}
+
+// ─── TAGS ─────────────────────────────────────────────────────────────────────
+
+model Tag {
+  id   String   @id @default(uuid())
+  name String   @unique
+  slug String   @unique
+  apps AppTag[]
+}
+
+model AppTag {
+  appId String
+  tagId String
+  app   App    @relation(fields: [appId], references: [id])
+  tag   Tag    @relation(fields: [tagId], references: [id])
+
+  @@id([appId, tagId])
+}
+
+// ─── USER ACTIVITY ────────────────────────────────────────────────────────────
+
+model Favorite {
+  userId    String
+  appId     String
+  user      User     @relation(fields: [userId], references: [id])
+  app       App      @relation(fields: [appId], references: [id])
+  createdAt DateTime @default(now())
+
+  @@id([userId, appId])
+}
+
+model RecentlyUsed {
+  userId     String
+  appId      String
+  user       User     @relation(fields: [userId], references: [id])
+  app        App      @relation(fields: [appId], references: [id])
+  launchedAt DateTime @default(now())
+
+  @@id([userId, appId])
+  @@index([userId, launchedAt(sort: Desc)])
+}
+
+// ─── LAUNCH EVENTS (append-only telemetry) ────────────────────────────────────
+
+model LaunchEvent {
+  id        String   @id @default(uuid())
+  appId     String
+  app       App      @relation(fields: [appId], references: [id])
+  userId    String?  // null = anonymous launch
+  user      User?    @relation(fields: [userId], references: [id])
+  sessionId String?
+  ipHash    String?  // SHA-256 of IP for privacy-safe analytics
+  userAgent String?
+  referrer  String?
+  createdAt DateTime @default(now())
+
+  @@index([appId, createdAt])
+  @@index([userId])
+}
+
+// ─── MODERATION ───────────────────────────────────────────────────────────────
+
+model ModerationReview {
+  id              String       @id @default(uuid())
+  appId           String
+  app             App          @relation(fields: [appId], references: [id])
+  reviewerId      String?
+  reviewer        User?        @relation("Reviewer", fields: [reviewerId], references: [id])
+  status          ReviewStatus @default(PENDING)
+  notes           String?      // internal reviewer notes
+  rejectionReason String?      // shown to creator
+  createdAt       DateTime     @default(now())
+  updatedAt       DateTime     @updatedAt
+  completedAt     DateTime?
+
+  @@index([status])
+  @@index([appId])
+}
+
+// ─── PROMOTIONS ───────────────────────────────────────────────────────────────
+
+model PromotionJob {
+  id              String          @id @default(uuid())
+  appId           String
+  app             App             @relation(fields: [appId], references: [id])
+  requestedById   String
+  channel         String          // "openclaw" | "paperclip" | future channels
+  status          PromotionStatus @default(PENDING_APPROVAL)
+  metadata        Json?           // channel-specific payload (flexible)
+  approvedById    String?
+  approvedBy      User?           @relation("ApprovedBy", fields: [approvedById], references: [id])
+  approvedAt      DateTime?
+  rejectedAt      DateTime?
+  rejectionReason String?
+  scheduledFor    DateTime?
+  createdAt       DateTime        @default(now())
+  updatedAt       DateTime        @updatedAt
+
+  runs PromotionRun[]
+
+  @@index([appId])
+  @@index([status])
+}
+
+model PromotionRun {
+  id              String       @id @default(uuid())
+  jobId           String
+  job             PromotionJob @relation(fields: [jobId], references: [id])
+  attemptNumber   Int          @default(1)
+  status          RunStatus    @default(PENDING)
+  startedAt       DateTime?
+  completedAt     DateTime?
+  errorMessage    String?
+  requestPayload  Json?
+  responsePayload Json?
+  createdAt       DateTime     @default(now())
+
+  @@index([jobId])
+}
+
+// ─── USER REVIEWS ─────────────────────────────────────────────────────────────
+
+model AppReview {
+  id        String   @id @default(uuid())
+  appId     String
+  app       App      @relation(fields: [appId], references: [id], onDelete: Cascade)
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  rating    Int      // 1–5
+  comment   String
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([appId, userId])
+  @@index([appId, createdAt(sort: Desc)])
+}
+
+// ─── AUDIT LOG (append-only, never mutated) ───────────────────────────────────
+
+model AuditLog {
+  id            String   @id @default(uuid())
+  action        String   // e.g. "app.status_changed", "moderation.approved"
+  entityType    String   // e.g. "App", "User", "PromotionJob"
+  entityId      String
+  performedById String?
+  performedBy   User?    @relation("PerformedBy", fields: [performedById], references: [id])
+  before        Json?    // state snapshot before change
+  after         Json?    // state snapshot after change
+  metadata      Json?    // extra context (IP, reason, etc.)
+  createdAt     DateTime @default(now())
+
+  @@index([entityType, entityId])
+  @@index([performedById])
+  @@index([action])
+  @@index([createdAt])
+}

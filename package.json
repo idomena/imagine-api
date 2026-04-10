@@ -1,0 +1,55 @@
+{
+  "name": "appmarket-api",
+  "version": "1.0.0",
+  "private": true,
+  "scripts": {
+    "dev": "tsx watch src/server.ts",
+    "build": "tsc",
+    "start": "tsx src/server.ts",
+    "typecheck": "tsc --noEmit",
+    "db:generate": "prisma generate",
+    "db:migrate": "prisma migrate dev",
+    "db:migrate:prod": "prisma migrate deploy",
+    "db:push": "prisma db push",
+    "db:studio": "prisma studio",
+    "db:seed": "tsx prisma/seed.ts"
+  },
+  "prisma": {
+    "seed": "tsx prisma/seed.ts"
+  },
+  "dependencies": {
+    "@fastify/auth": "^3.0.2",
+    "@fastify/cookie": "^11.0.2",
+    "@fastify/cors": "^8.5.0",
+    "@fastify/formbody": "^8.0.2",
+    "@fastify/helmet": "^13.0.2",
+    "@fastify/jwt": "^6.7.1",
+    "@fastify/multipart": "8.2.0",
+    "@fastify/rate-limit": "^10.3.0",
+    "@fastify/static": "7.0.1",
+    "@prisma/client": "^5.22.0",
+    "bcryptjs": "^2.4.3",
+    "bullmq": "^5.0.0",
+    "cloudinary": "^2.9.0",
+    "dotenv": "^16.4.5",
+    "fastify": "^4.28.1",
+    "fastify-plugin": "^4.5.1",
+    "ioredis": "^5.0.0",
+    "pino": "^9.0.0",
+    "pino-pretty": "^11.3.0",
+    "playwright": "^1.59.1",
+    "sharp": "^0.34.5",
+    "zod": "^3.23.8"
+  },
+  "devDependencies": {
+    "@types/bcryptjs": "^2.4.6",
+    "@types/node": "^22.7.5",
+    "@types/sharp": "^0.32.0",
+    "prisma": "^5.22.0",
+    "tsx": "^4.19.1",
+    "typescript": "^5.6.3"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}
