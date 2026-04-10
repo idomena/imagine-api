@@ -273,7 +273,7 @@ async function loadQueue() {
     el.innerHTML = data.map(function(app) {
       const icon = app.iconUrl
         ? '<img src="' + esc(app.iconUrl) + '" alt="" loading="lazy">'
-        : '\\u{1F4E6}';
+        : '📦';
       const submittedAgo = app.submittedAt ? timeAgo(app.submittedAt) : '-';
       const creator  = (app.creator && app.creator.displayName) || 'Unknown';
       const email    = (app.creator && app.creator.user && app.creator.user.email) || '';
@@ -289,8 +289,8 @@ async function loadQueue() {
         + launchRow
         + '</div>'
         + '<div class="actions">'
-        + '<button class="btn btn-approve" onclick="approveApp(\'' + esc(app.id) + '\',this)">Approve</button>'
-        + '<button class="btn btn-delete" onclick="deleteApp(\'' + esc(app.id) + '\',this)">Delete</button>'
+        + '<button class="btn btn-approve" data-id="' + esc(app.id) + '" onclick="approveApp(this)">Approve</button>'
+        + '<button class="btn btn-delete" data-id="' + esc(app.id) + '" onclick="deleteApp(this)">Delete</button>'
         + '</div>'
         + '</div>';
     }).join('');
@@ -299,7 +299,8 @@ async function loadQueue() {
   }
 }
 
-async function approveApp(id, btn) {
+async function approveApp(btn) {
+  var id = btn.dataset.id;
   var orig = btn.textContent;
   btn.disabled = true;
   btn.innerHTML = '<span class="spinner"></span>';
@@ -317,8 +318,9 @@ async function approveApp(id, btn) {
   }
 }
 
-async function deleteApp(id, btn) {
+async function deleteApp(btn) {
   if (!confirm('Permanently delete this app?')) return;
+  var id = btn.dataset.id;
   var orig = btn.textContent;
   btn.disabled = true;
   btn.innerHTML = '<span class="spinner"></span>';
