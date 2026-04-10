@@ -289,8 +289,8 @@ async function loadQueue() {
         + launchRow
         + '</div>'
         + '<div class="actions">'
-        + '<button class="btn btn-approve" data-id="' + esc(app.id) + '" onclick="approveApp(this)">Approve</button>'
-        + '<button class="btn btn-delete" data-id="' + esc(app.id) + '" onclick="deleteApp(this)">Delete</button>'
+        + '<button class="btn btn-approve" data-id="' + esc(app.id) + '">Approve</button>'
+        + '<button class="btn btn-delete"  data-id="' + esc(app.id) + '">Delete</button>'
         + '</div>'
         + '</div>';
     }).join('');
@@ -301,16 +301,14 @@ async function loadQueue() {
 
 async function approveApp(btn) {
   var id = btn.dataset.id;
+  console.log('Click detected for app:', id);
   var orig = btn.textContent;
   btn.disabled = true;
   btn.innerHTML = '<span class="spinner"></span>';
   try {
     await apiFetch('/api/v1/admin/apps/' + id + '/approve', { method: 'POST' });
-    var card = document.getElementById('card-' + id);
-    card.style.transition = 'opacity .3s';
-    card.style.opacity = '0';
-    setTimeout(function() { card.remove(); updateCount(-1); }, 300);
     toast('App approved and published.');
+    setTimeout(function() { loadQueue(); }, 300);
   } catch(e) {
     btn.disabled = false;
     btn.textContent = orig;
@@ -319,18 +317,16 @@ async function approveApp(btn) {
 }
 
 async function deleteApp(btn) {
-  if (!confirm('Permanently delete this app?')) return;
   var id = btn.dataset.id;
+  console.log('Click detected for app:', id);
+  if (!confirm('Permanently delete this app?')) return;
   var orig = btn.textContent;
   btn.disabled = true;
   btn.innerHTML = '<span class="spinner"></span>';
   try {
     await apiFetch('/api/v1/admin/apps/' + id, { method: 'DELETE' });
-    var card = document.getElementById('card-' + id);
-    card.style.transition = 'opacity .3s';
-    card.style.opacity = '0';
-    setTimeout(function() { card.remove(); updateCount(-1); }, 300);
     toast('App deleted.');
+    setTimeout(function() { loadQueue(); }, 300);
   } catch(e) {
     btn.disabled = false;
     btn.textContent = orig;
@@ -369,6 +365,14 @@ function refreshAll() {
   const ts = new Date().toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' });
   document.getElementById('last-refresh').textContent = 'Refreshed ' + ts;
 }
+
+// Event delegation for queue buttons — avoids inline onclick which CSP blocks
+document.getElementById('queue-list').addEventListener('click', function(e) {
+  var btn = e.target.closest('button');
+  if (!btn) return;
+  if (btn.classList.contains('btn-approve')) approveApp(btn);
+  if (btn.classList.contains('btn-delete'))  deleteApp(btn);
+});
 
 refreshAll();
 setInterval(refreshAll, 60000);
