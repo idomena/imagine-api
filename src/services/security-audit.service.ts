@@ -463,7 +463,7 @@ function computePhase3(phase1: Phase1Result, phase2: Phase2Result): Phase3Result
   if (criticalThreats.length > 0 || score <= 20) {
     decision  = 'AUTO_REJECTED'
     reasoning = `Rejected: ${criticalThreats.length} critical threat(s) — ${criticalThreats.map(t => t.type).join(', ')}`
-  } else if (score > 90 && warnings.length === 0) {
+  } else if (score > 80 && warnings.length === 0) {
     decision  = 'AUTO_PUBLISHED'
     reasoning = `Safety score ${score}/100 with no threats or warnings — automatically published.`
   } else {

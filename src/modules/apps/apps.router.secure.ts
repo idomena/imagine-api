@@ -209,7 +209,7 @@ export async function appsRouter(app: FastifyInstance) {
         void securityLogger.adminAction(request, 'app_auto_published', 'App', id, {
           score: auditResult.safetyScore,
         })
-        return reply.send({ success: true, data: published })
+        return reply.send({ success: true, autoPublished: true, data: published })
       }
 
       // HELD_FOR_REVIEW (or audit pipeline failed): stay as SUBMITTED
@@ -219,7 +219,7 @@ export async function appsRouter(app: FastifyInstance) {
         score:         auditResult?.safetyScore ?? null,
       })
 
-      return reply.send({ success: true, data: submitted })
+      return reply.send({ success: true, autoPublished: false, data: submitted })
     },
   )
 

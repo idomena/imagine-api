@@ -58,7 +58,10 @@ export const appsRepository = {
         take: opts.take,
         skip: opts.skip,
         orderBy: { createdAt: 'desc' },
-        include: { _count: { select: { launchEvents: true } } },
+        include: {
+          _count: { select: { launchEvents: true } },
+          securityAuditReport: { select: { safetyScore: true, decision: true } },
+        },
       }),
       db.app.count({ where }),
     ])
