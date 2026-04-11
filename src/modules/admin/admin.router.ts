@@ -454,7 +454,9 @@ function showAuditModal(report) {
     + (pay.trustedGatewayDetected ? chk(true, 'Trusted gateway: ' + (pay.trustedGateways || []).join(', ')) : '')
     + chk(!phi.suspiciousFormActions, phi.suspiciousFormActions ? 'Suspicious external form actions' : 'No suspicious form actions')
     + chk(!idt.sensitiveFieldsFound, idt.sensitiveFieldsFound ? 'Identity theft fields: ' + (idt.sensitiveFields || []).join(', ') : 'No identity theft fields detected')
-    + chk(!phase2.obfuscatedContent, phase2.obfuscatedContent ? 'Obfuscated JavaScript detected' : 'No obfuscated JavaScript')
+    + chk(!phase2.obfuscatedContent, phase2.obfuscatedContent ? 'Malicious obfuscated JavaScript detected' : 'No malicious obfuscation')
+    + chk(!(phase2.xss && (phase2.xss.cookieTheftDetected || phase2.xss.storageTheftDetected)), (phase2.xss && phase2.xss.cookieTheftDetected) ? 'Cookie/session theft script detected' : (phase2.xss && phase2.xss.storageTheftDetected) ? 'Storage exfiltration script detected' : 'No XSS credential theft detected')
+    + chk(!(phase2.clickjacking && phase2.clickjacking.suspiciousOverlayDetected), (phase2.clickjacking && phase2.clickjacking.suspiciousOverlayDetected) ? 'Clickjacking overlay detected' : 'No clickjacking overlay detected')
     + '</div>'
 
     + '<div style="margin-top:1rem;font-size:.75rem;color:#555">Last audited: ' + esc(auditedStr) + '</div>'

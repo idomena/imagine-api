@@ -169,27 +169,34 @@ export async function appsRouter(app: FastifyInstance) {
       // Fetch the app to extract its launchUrl for the audit pipeline
       const appData = await appsService.get(id)
 
-      // ── Autonomous Security Audit Pipeline ────────────────────────────────
-      // Runs all three phases (domain reputation + content analysis + scoring).
-      // On failure the pipeline fails-open: the app is submitted normally and
-      // held for manual review — an audit error never blocks the creator.
+      // ── Step 1: Transition DRAFT → SUBMITTED first ────────────────────────
+      // The app must be in SUBMITTED state before the audit report is written.
+      // This guarantees the Admin Audit UI always finds the report regardless
+      // of the final status outcome (PUBLISHED / REJECTED / SUBMITTED).
+      const submitted = await appsService.submit(id, creator.id)
+
+      // ── Step 2: Run Security Audit Pipeline ───────────────────────────────
+      // Report is persisted inside runSecurityAudit() before returning.
+      // On pipeline failure the app stays in SUBMITTED for manual review —
+      // an audit error never blocks or rejects the creator.
       let auditResult: Awaited<ReturnType<typeof runSecurityAudit>> | null = null
       try {
         auditResult = await runSecurityAudit(id, appData.launchUrl ?? '')
       } catch (auditErr) {
-        logger.error({ auditErr, appId: id }, '[security-audit] Pipeline failed — falling back to manual review')
+        logger.error({ auditErr, appId: id }, '[security-audit] Pipeline failed — app stays in SUBMITTED for manual review')
       }
 
-      // AUTO_REJECTED: transition DRAFT → SUBMITTED → REJECTED, return 422
+      // ── Step 3: Act on audit decision (status change AFTER report is saved) ─
+
+      // AUTO_REJECTED: confirmed cyber attack → SUBMITTED → REJECTED, return 422
       if (auditResult?.decision === 'AUTO_REJECTED') {
-        await appsService.submit(id, creator.id)
         await appsService.adminReject(id)
         void securityLogger.threatDetected(request, id,
           auditResult.threats.map(t => ({ uri: appData.launchUrl ?? '', types: [t.type] }))
         )
         void securityLogger.adminAction(request, 'app_auto_rejected', 'App', id, {
-          score:    auditResult.safetyScore,
-          threats:  auditResult.threats,
+          score:   auditResult.safetyScore,
+          threats: auditResult.threats,
         })
         return reply.status(422).send({
           success: false,
@@ -200,10 +207,7 @@ export async function appsRouter(app: FastifyInstance) {
         })
       }
 
-      // All other cases: transition to SUBMITTED first
-      const submitted = await appsService.submit(id, creator.id)
-
-      // AUTO_PUBLISHED: immediately transition SUBMITTED → PUBLISHED
+      // AUTO_PUBLISHED: no threats detected → SUBMITTED → PUBLISHED immediately
       if (auditResult?.decision === 'AUTO_PUBLISHED') {
         const published = await appsService.adminApprove(id)
         void securityLogger.adminAction(request, 'app_auto_published', 'App', id, {
@@ -212,7 +216,7 @@ export async function appsRouter(app: FastifyInstance) {
         return reply.send({ success: true, autoPublished: true, data: published })
       }
 
-      // HELD_FOR_REVIEW (or audit pipeline failed): stay as SUBMITTED
+      // HELD_FOR_REVIEW or pipeline error → stay as SUBMITTED for manual review
       void securityLogger.adminAction(request, 'app_submitted', 'App', id, {
         creatorId:     creator.id,
         auditDecision: auditResult?.decision ?? 'PIPELINE_ERROR',
