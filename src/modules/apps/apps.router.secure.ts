@@ -11,7 +11,7 @@ import {
   RenameAppBodySchema,
   UpdateAppBodySchema,
 } from './apps.schema'
-import { runSecurityAudit } from '../../services/security-audit.service'
+import { scanApp } from '../../services/security-audit.service'
 import { securityLogger } from '../../services/security-logger.service'
 import { logger } from '../../core/logger'
 import { SUBMIT_RATE_LIMIT } from '../../plugins/rate-limit.plugin'
@@ -31,6 +31,40 @@ import { SUBMIT_RATE_LIMIT } from '../../plugins/rate-limit.plugin'
 function assertHttps(url: string | undefined | null, field: string): void {
   if (url && url.startsWith('http://')) {
     throw new Error(`${field} must use HTTPS`)
+  }
+}
+
+/**
+ * Background security scan — runs after the app is already PUBLISHED.
+ * If a malicious script is found: reverts the app to SUBMITTED and writes
+ * a security flag to the Admin log. If anything at all fails, the app stays
+ * PUBLISHED — a scan crash must never take an innocent app down.
+ */
+async function runBackgroundScan(
+  appId:     string,
+  launchUrl: string,
+  request:   import('fastify').FastifyRequest,
+): Promise<void> {
+  try {
+    const result = await scanApp(appId, launchUrl)
+
+    if (result.malicious) {
+      await appsService.securityRevert(appId)
+
+      void securityLogger.threatDetected(request, appId,
+        result.threats.map(t => ({ uri: launchUrl, types: [t.type] }))
+      )
+      void securityLogger.adminAction(request, 'app_security_reverted', 'App', appId, {
+        reason:  'Malicious script detected after publish',
+        threats: result.threats,
+      })
+
+      logger.warn({ appId, threats: result.threats.map(t => t.type) },
+        '[sentinel] Malicious script detected — app reverted to SUBMITTED')
+    }
+  } catch (err) {
+    // Never crash the server or affect the published app
+    logger.error({ err, appId }, '[sentinel] Background scan error — app stays PUBLISHED')
   }
 }
 
@@ -154,7 +188,10 @@ export async function appsRouter(app: FastifyInstance) {
     },
   )
 
-  // ── Creator: submit — WITH threat scan + rate limit ───────────────────────
+  // ── Creator: submit — Pass-by-Default ────────────────────────────────────
+  // App is published immediately. Security scan runs in the background.
+  // If the scan finds a definite malicious script, it silently reverts the app
+  // to SUBMITTED and writes a security flag to the Admin log.
 
   app.post(
     '/:id/submit',
@@ -165,65 +202,16 @@ export async function appsRouter(app: FastifyInstance) {
     async (request, reply) => {
       const creator = await appsService.resolveCreator(request.user.sub)
       const { id } = request.params as { id: string }
-
-      // Fetch the app to extract its launchUrl for the audit pipeline
       const appData = await appsService.get(id)
 
-      // ── Step 1: Transition DRAFT → SUBMITTED first ────────────────────────
-      // The app must be in SUBMITTED state before the audit report is written.
-      // This guarantees the Admin Audit UI always finds the report regardless
-      // of the final status outcome (PUBLISHED / REJECTED / SUBMITTED).
-      const submitted = await appsService.submit(id, creator.id)
+      // Publish immediately — DRAFT → SUBMITTED → PUBLISHED
+      await appsService.submit(id, creator.id)
+      const published = await appsService.adminApprove(id)
 
-      // ── Step 2: Run Security Audit Pipeline ───────────────────────────────
-      // Report is persisted inside runSecurityAudit() before returning.
-      // On pipeline failure the app stays in SUBMITTED for manual review —
-      // an audit error never blocks or rejects the creator.
-      let auditResult: Awaited<ReturnType<typeof runSecurityAudit>> | null = null
-      try {
-        auditResult = await runSecurityAudit(id, appData.launchUrl ?? '')
-      } catch (auditErr) {
-        logger.error({ auditErr, appId: id }, '[security-audit] Pipeline failed — app stays in SUBMITTED for manual review')
-      }
+      // Fire background scan — never awaited, never blocks the creator
+      void runBackgroundScan(id, appData.launchUrl ?? '', request)
 
-      // ── Step 3: Act on audit decision (status change AFTER report is saved) ─
-
-      // AUTO_REJECTED: confirmed cyber attack → SUBMITTED → REJECTED, return 422
-      if (auditResult?.decision === 'AUTO_REJECTED') {
-        await appsService.adminReject(id)
-        void securityLogger.threatDetected(request, id,
-          auditResult.threats.map(t => ({ uri: appData.launchUrl ?? '', types: [t.type] }))
-        )
-        void securityLogger.adminAction(request, 'app_auto_rejected', 'App', id, {
-          score:   auditResult.safetyScore,
-          threats: auditResult.threats,
-        })
-        return reply.status(422).send({
-          success: false,
-          error: {
-            message: 'Submission rejected by automated security scan.',
-            details: auditResult.threats.map(t => t.description),
-          },
-        })
-      }
-
-      // AUTO_PUBLISHED: no threats detected → SUBMITTED → PUBLISHED immediately
-      if (auditResult?.decision === 'AUTO_PUBLISHED') {
-        const published = await appsService.adminApprove(id)
-        void securityLogger.adminAction(request, 'app_auto_published', 'App', id, {
-          score: auditResult.safetyScore,
-        })
-        return reply.send({ success: true, autoPublished: true, data: published })
-      }
-
-      // HELD_FOR_REVIEW or pipeline error → stay as SUBMITTED for manual review
-      void securityLogger.adminAction(request, 'app_submitted', 'App', id, {
-        creatorId:     creator.id,
-        auditDecision: auditResult?.decision ?? 'PIPELINE_ERROR',
-        score:         auditResult?.safetyScore ?? null,
-      })
-
-      return reply.send({ success: true, autoPublished: false, data: submitted })
+      return reply.send({ success: true, autoPublished: true, data: published })
     },
   )
 
@@ -245,20 +233,6 @@ export async function appsRouter(app: FastifyInstance) {
     { preHandler: [app.requireRole([UserRole.MODERATOR, UserRole.ADMIN])] },
     async (request, reply) => {
       const { id } = request.params as { id: string }
-
-      // Second gate at approval — re-audit in case URL was changed after submit
-      const appData    = await appsService.get(id)
-      const reaudit    = await runSecurityAudit(id, appData.launchUrl ?? '')
-      if (reaudit.decision === 'AUTO_REJECTED') {
-        void securityLogger.threatDetected(request, id,
-          reaudit.threats.map(t => ({ uri: appData.launchUrl ?? '', types: [t.type] }))
-        )
-        return reply.status(422).send({
-          success: false,
-          error: { message: 'Approval blocked: security threats detected.', details: reaudit.threats.map(t => t.description) },
-        })
-      }
-
       const data = await appsService.approve(id, request.user.sub)
       void securityLogger.adminAction(request, 'app_approved', 'App', id, {
         reviewerId: request.user.sub,

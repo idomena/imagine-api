@@ -68,6 +68,15 @@ export const appsRepository = {
     return { items, total }
   },
 
+  /** Security override: revert a PUBLISHED app back to SUBMITTED.
+   *  Bypasses the normal state machine — only called by the background scanner. */
+  async securityRevert(appId: string) {
+    return db.app.update({
+      where: { id: appId },
+      data:  { status: AppStatus.SUBMITTED, publishedAt: null },
+    })
+  },
+
   async create(creatorId: string, data: CreateAppBody) {
     return db.app.create({
       data: {

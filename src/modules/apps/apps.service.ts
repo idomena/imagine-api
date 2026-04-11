@@ -268,4 +268,11 @@ export const appsService = {
       rejectedAt: new Date(),
     })
   },
+
+  /** Security override: silently revert a PUBLISHED app back to SUBMITTED.
+   *  Called only by the background scanner when a malicious script is found.
+   *  Bypasses the state machine intentionally — this is a security action. */
+  async securityRevert(appId: string) {
+    return appsRepository.securityRevert(appId)
+  },
 }

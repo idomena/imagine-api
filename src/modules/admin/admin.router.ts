@@ -59,6 +59,7 @@ async function getPendingApps() {
           user: { select: { email: true } },
         },
       },
+      securityAuditReport: { select: { decision: true } },
     },
   })
 }
@@ -302,10 +303,14 @@ async function loadQueue() {
       const launchRow = app.launchUrl
         ? '<div class="app-url">' + esc(app.launchUrl) + '</div>'
         : '';
-      return '<div class="app-card" id="card-' + esc(app.id) + '">'
+      const isSecurityFlag = app.securityAuditReport && app.securityAuditReport.decision === 'AUTO_REJECTED';
+      const secBadge = isSecurityFlag
+        ? '<span style="display:inline-block;background:#2a0f0f;color:#ef4444;border:1px solid #7f1d1d;border-radius:999px;font-size:.625rem;font-weight:700;padding:.1rem .45rem;margin-left:.4rem;vertical-align:middle;letter-spacing:.02em">⚠ SECURITY FLAG</span>'
+        : '';
+      return '<div class="app-card" id="card-' + esc(app.id) + '"' + (isSecurityFlag ? ' style="border-color:#7f1d1d"' : '') + '>'
         + '<div class="icon">' + icon + '</div>'
         + '<div class="app-info">'
-        + '<div class="app-name">' + esc(app.name) + '</div>'
+        + '<div class="app-name">' + esc(app.name) + secBadge + '</div>'
         + '<div class="app-meta">' + esc(app.tagline) + '</div>'
         + '<div class="app-meta">' + esc(creator) + (email ? ' &middot; ' + esc(email) : '') + ' &middot; ' + esc(submittedAgo) + '</div>'
         + launchRow
