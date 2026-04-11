@@ -169,6 +169,28 @@ function dashboardPage(): string {
   #toast.err{background:#2a0f0f;border-color:#7f1d1d;color:#fca5a5}
   #toast.ok{background:#0f2318;border-color:#14532d;color:#86efac}
   .spinner-full{padding:2rem 0;text-align:center;color:var(--muted);font-size:.875rem}
+  .btn-audit{background:#1e2030;color:var(--accent);border:1px solid #2d2f55}
+  .btn-audit:hover:not(:disabled){background:#252742}
+  .modal-overlay{position:fixed;inset:0;background:rgba(0,0,0,.8);z-index:100;display:flex;align-items:center;justify-content:center;padding:1rem}
+  .modal{background:var(--surface);border:1px solid var(--border);border-radius:12px;width:100%;max-width:620px;max-height:90vh;overflow-y:auto;padding:1.5rem}
+  .modal-header{display:flex;justify-content:space-between;align-items:center;margin-bottom:1.25rem}
+  .modal-title{font-size:1rem;font-weight:600}
+  .modal-close{background:none;border:none;color:var(--muted);cursor:pointer;font-size:1.5rem;line-height:1;padding:0 .25rem}
+  .modal-close:hover{color:var(--text)}
+  .decision-badge{display:inline-flex;align-items:center;padding:.3rem .75rem;border-radius:999px;font-size:.8125rem;font-weight:600}
+  .decision-auto-published{background:#0f2318;color:var(--green);border:1px solid #14532d}
+  .decision-held{background:#1c1206;color:var(--yellow);border:1px solid #78350f}
+  .decision-rejected{background:#2a0f0f;color:var(--red);border:1px solid #7f1d1d}
+  .score-bar{height:6px;border-radius:3px;background:#2a2a32;margin:.6rem 0 .25rem}
+  .score-fill{height:100%;border-radius:3px}
+  .score-high{background:var(--green)}.score-mid{background:var(--yellow)}.score-low{background:var(--red)}
+  .audit-section{margin-top:1rem;border-top:1px solid var(--border);padding-top:1rem}
+  .audit-section h3{font-size:.75rem;font-weight:600;color:var(--muted);text-transform:uppercase;letter-spacing:.04em;margin-bottom:.625rem}
+  .threat-item{padding:.4rem 0;border-bottom:1px solid #1e1e25;font-size:.8rem;line-height:1.5}
+  .threat-item:last-child{border-bottom:none}
+  .sev-CRITICAL{color:var(--red);font-weight:700}.sev-HIGH{color:#f97316;font-weight:600}.sev-MEDIUM{color:var(--yellow);font-weight:600}.sev-LOW{color:#60a5fa}
+  .check-row{display:flex;align-items:center;gap:.375rem;font-size:.8rem;color:var(--muted);padding:.2rem 0}
+  .chk-ok{color:var(--green)}.chk-fail{color:var(--red)}
 </style>
 </head>
 <body>
@@ -289,6 +311,7 @@ async function loadQueue() {
         + launchRow
         + '</div>'
         + '<div class="actions">'
+        + '<button class="btn btn-audit"   data-id="' + esc(app.id) + '">Audit</button>'
         + '<button class="btn btn-approve" data-id="' + esc(app.id) + '">Approve</button>'
         + '<button class="btn btn-delete"  data-id="' + esc(app.id) + '">Delete</button>'
         + '</div>'
@@ -366,10 +389,110 @@ function refreshAll() {
   document.getElementById('last-refresh').textContent = 'Refreshed ' + ts;
 }
 
+function showAuditModal(report) {
+  var existing = document.getElementById('audit-modal-overlay');
+  if (existing) existing.remove();
+  if (!report) { toast('No audit report available for this app.', 'err'); return; }
+
+  var decision = report.decision || 'UNKNOWN';
+  var decCls   = decision === 'AUTO_PUBLISHED' ? 'decision-auto-published'
+               : decision === 'AUTO_REJECTED'  ? 'decision-rejected'
+               : 'decision-held';
+  var decLbl   = decision === 'AUTO_PUBLISHED' ? 'Auto-Published'
+               : decision === 'AUTO_REJECTED'  ? 'Auto-Rejected'
+               : 'Held for Review';
+
+  var score     = typeof report.safetyScore === 'number' ? report.safetyScore : 0;
+  var scoreCls  = score > 90 ? 'score-high' : score > 50 ? 'score-mid' : 'score-low';
+  var threats   = Array.isArray(report.threats)  ? report.threats  : [];
+  var warnings  = Array.isArray(report.warnings) ? report.warnings : [];
+  var phase1    = report.phase1 || {};
+  var phase2    = report.phase2 || {};
+  var phase3    = report.phase3 || {};
+  var pay       = phase2.payment       || {};
+  var phi       = phase2.phishing      || {};
+  var idt       = phase2.identityTheft || {};
+
+  function threatRows(items) {
+    if (!items.length) return '<div class="check-row" style="color:#555">None detected.</div>';
+    return items.map(function(t) {
+      return '<div class="threat-item"><span class="sev-' + esc(t.severity || 'LOW') + '">[' + esc(t.severity) + '] ' + esc(t.type) + '</span> — ' + esc(t.description || '') + '</div>';
+    }).join('');
+  }
+
+  function chk(ok, label) {
+    return '<div class="check-row"><span class="' + (ok ? 'chk-ok' : 'chk-fail') + '">' + (ok ? '✓' : '✗') + '</span> ' + esc(label) + '</div>';
+  }
+
+  var auditedAt = report.updatedAt || report.createdAt;
+  var auditedStr = auditedAt ? new Date(auditedAt).toLocaleString() : '—';
+
+  var html = '<div class="modal-overlay" id="audit-modal-overlay">'
+    + '<div class="modal">'
+    + '<div class="modal-header"><span class="modal-title">Security Audit Report</span>'
+    + '<button class="modal-close" id="close-audit-modal">&times;</button></div>'
+
+    + '<div style="display:flex;align-items:center;gap:.75rem;flex-wrap:wrap">'
+    + '<span class="decision-badge ' + decCls + '">' + decLbl + '</span>'
+    + '<span style="color:var(--muted);font-size:.875rem">Safety Score: <strong style="color:var(--text)">' + score + ' / 100</strong></span>'
+    + '</div>'
+    + '<div class="score-bar"><div class="score-fill ' + scoreCls + '" style="width:' + score + '%"></div></div>'
+    + '<p style="font-size:.8rem;color:var(--muted);margin-top:.375rem">' + esc(phase3.reasoning || 'No reasoning recorded.') + '</p>'
+
+    + '<div class="audit-section"><h3>Critical Threats (' + threats.length + ')</h3>' + threatRows(threats) + '</div>'
+    + '<div class="audit-section"><h3>Warnings (' + warnings.length + ')</h3>' + threatRows(warnings) + '</div>'
+
+    + '<div class="audit-section"><h3>Phase 1 — Domain Reputation</h3>'
+    + chk(phase1.apiAvailable !== false, 'Google Web Risk API reachable')
+    + chk(phase1.domainReputation !== 'THREAT', 'Domain not flagged by Web Risk')
+    + chk(!phase1.blacklisted, 'Domain not in local blacklist')
+    + '</div>'
+
+    + '<div class="audit-section"><h3>Phase 2 — Content Analysis</h3>'
+    + chk(phase2.fetched !== false, phase2.fetched !== false ? 'Page fetched (' + (phase2.contentLength || 0).toLocaleString() + ' bytes)' : 'Page fetch failed: ' + (phase2.fetchError || 'unknown'))
+    + chk(!pay.untrustedCCCollection, pay.untrustedCCCollection ? 'UNTRUSTED credit card collection detected' : 'No untrusted CC collection')
+    + (pay.trustedGatewayDetected ? chk(true, 'Trusted gateway: ' + (pay.trustedGateways || []).join(', ')) : '')
+    + chk(!phi.suspiciousFormActions, phi.suspiciousFormActions ? 'Suspicious external form actions' : 'No suspicious form actions')
+    + chk(!idt.sensitiveFieldsFound, idt.sensitiveFieldsFound ? 'Identity theft fields: ' + (idt.sensitiveFields || []).join(', ') : 'No identity theft fields detected')
+    + chk(!phase2.obfuscatedContent, phase2.obfuscatedContent ? 'Obfuscated JavaScript detected' : 'No obfuscated JavaScript')
+    + '</div>'
+
+    + '<div style="margin-top:1rem;font-size:.75rem;color:#555">Last audited: ' + esc(auditedStr) + '</div>'
+    + '</div></div>';
+
+  document.body.insertAdjacentHTML('beforeend', html);
+
+  document.getElementById('audit-modal-overlay').addEventListener('click', function(e) {
+    if (e.target === this) this.remove();
+  });
+  document.getElementById('close-audit-modal').addEventListener('click', function() {
+    var overlay = document.getElementById('audit-modal-overlay');
+    if (overlay) overlay.remove();
+  });
+}
+
+async function viewAuditReport(btn) {
+  var id   = btn.dataset.id;
+  var orig = btn.textContent;
+  btn.disabled = true;
+  btn.innerHTML = '<span class="spinner"></span>';
+  try {
+    var res = await apiFetch('/api/v1/admin/apps/' + id + '/audit-report');
+    if (!res) return;
+    showAuditModal(res.data);
+  } catch(e) {
+    toast(e.message || 'Failed to load audit report', 'err');
+  } finally {
+    btn.disabled = false;
+    btn.textContent = orig;
+  }
+}
+
 // Event delegation for queue buttons — avoids inline onclick which CSP blocks
 document.getElementById('queue-list').addEventListener('click', function(e) {
   var btn = e.target.closest('button');
   if (!btn) return;
+  if (btn.classList.contains('btn-audit'))   viewAuditReport(btn);
   if (btn.classList.contains('btn-approve')) approveApp(btn);
   if (btn.classList.contains('btn-delete'))  deleteApp(btn);
 });
@@ -476,6 +599,20 @@ export async function adminRouter(app: FastifyInstance) {
     await appsRepository.delete(id)
     logger.warn({ appId: id, ip: request.ip }, '[admin] App hard-deleted')
     return reply.status(204).send()
+  })
+
+  // ── API: Security Audit Report ───────────────────────────────────────────
+  app.get('/api/v1/admin/apps/:id/audit-report', async (request, reply) => {
+    if (!apiAuth(request, reply)) return
+    const { id } = request.params as { id: string }
+    const report = await db.securityAuditReport.findUnique({ where: { appId: id } })
+    if (!report) {
+      return reply.status(404).send({
+        success: false,
+        error: { message: 'No audit report found. This app may have been submitted before the auto-approve pipeline was enabled.' },
+      })
+    }
+    return reply.send({ success: true, data: report })
   })
 
   // ── API: Security log ─────────────────────────────────────────────────────

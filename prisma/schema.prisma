@@ -64,6 +64,12 @@ enum RunStatus {
   FAILED
 }
 
+enum SecurityDecision {
+  AUTO_PUBLISHED
+  HELD_FOR_REVIEW
+  AUTO_REJECTED
+}
+
 // ─── AUTH / USERS ─────────────────────────────────────────────────────────────
 
 model User {
@@ -157,7 +163,8 @@ model App {
   launchEvents  LaunchEvent[]
   reviews       ModerationReview[]
   appReviews    AppReview[]
-  promotionJobs PromotionJob[]
+  promotionJobs        PromotionJob[]
+  securityAuditReport  SecurityAuditReport?
 
   @@index([status])
   @@index([creatorId])
@@ -349,6 +356,25 @@ model AppReview {
 
   @@unique([appId, userId])
   @@index([appId, createdAt(sort: Desc)])
+}
+
+// ─── SECURITY AUDIT REPORTS ───────────────────────────────────────────────────
+
+model SecurityAuditReport {
+  id          String           @id @default(uuid())
+  appId       String           @unique
+  app         App              @relation(fields: [appId], references: [id], onDelete: Cascade)
+  createdAt   DateTime         @default(now())
+  updatedAt   DateTime         @updatedAt
+  decision    SecurityDecision
+  safetyScore Int
+  phase1      Json?            // Phase1Result — domain reputation
+  phase2      Json?            // Phase2Result — content analysis
+  phase3      Json?            // Phase3Result — scoring + reasoning
+  threats     Json?            // ThreatEntry[] critical threats
+  warnings    Json?            // ThreatEntry[] warnings
+
+  @@index([appId])
 }
 
 // ─── AUDIT LOG (append-only, never mutated) ───────────────────────────────────
