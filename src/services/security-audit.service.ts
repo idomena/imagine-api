@@ -321,7 +321,7 @@ const ADULT_PLATFORM_HOSTNAMES = [
   'blacked', 'tushy', 'vixen',
   'xtube', 'youporn', 'redtube', 'tube8', 'spankbang', 'eporner',
   'chaturbate', 'stripchat', 'myfreecams', 'cam4', 'bongacams',
-  'adultempire', 'adultime', 'nubiles',
+  'adultempire', 'adultime', 'nubiles', 'onlyfans', 'pornstars', 
 ]
 
 function checkUrlSignatures(url: string): ThreatEntry[] {
@@ -390,7 +390,7 @@ const ADULT_RESTRICTED_TERMS: string[] = [
   'adult entertainment site', 'adult content site', 'explicit content',
 ]
 
-const ADULT_HIT_THRESHOLD = 3   // ≥ 3 unique hits → flag
+const ADULT_HIT_THRESHOLD = 1   // ≥ 1 unique hits → flag
 
 function detectAdultContent(html: string): ThreatEntry[] {
   // Build a single lowercased string from meta content + visible text.
