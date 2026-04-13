@@ -203,6 +203,49 @@ function detectPhishingForms(html: string, pageUrl: string): ThreatEntry[] {
   }]
 }
 
+// ─── Aggressive Pattern Detector ─────────────────────────────────────────────
+
+/**
+ * Check 4 — Aggressive Pattern Detection
+ * Flags any inline script containing document.cookie, localStorage.getItem,
+ * eval(, or atob( — regardless of exfiltration context.
+ */
+function detectAggressivePatterns(html: string): ThreatEntry[] {
+  const threats: ThreatEntry[] = []
+  const scripts = extractInlineScripts(html)
+  if (!scripts.trim()) return threats
+
+  if (/document\.cookie/i.test(scripts)) {
+    threats.push({
+      type:        'COOKIE_ACCESS',
+      description: 'Inline script accesses document.cookie — potential session data exposure.',
+    })
+  }
+
+  if (/localStorage\.getItem\s*\(/i.test(scripts)) {
+    threats.push({
+      type:        'STORAGE_ACCESS',
+      description: 'Inline script calls localStorage.getItem — potential credential access.',
+    })
+  }
+
+  if (/\beval\s*\(/i.test(scripts)) {
+    threats.push({
+      type:        'EVAL_USAGE',
+      description: 'Inline script uses eval() — common vector for code injection attacks.',
+    })
+  }
+
+  if (/\batob\s*\(/i.test(scripts)) {
+    threats.push({
+      type:        'ATOB_USAGE',
+      description: 'Inline script uses atob() — base64 decoding often used to obfuscate malicious payloads.',
+    })
+  }
+
+  return threats
+}
+
 // ─── Public API ───────────────────────────────────────────────────────────────
 
 export async function scanApp(appId: string, launchUrl: string): Promise<ScanResult> {
@@ -217,6 +260,7 @@ export async function scanApp(appId: string, launchUrl: string): Promise<ScanRes
       threats.push(...detectCredentialTheft(html))
       threats.push(...detectMaliciousObfuscation(html))
       threats.push(...detectPhishingForms(html, launchUrl))
+      threats.push(...detectAggressivePatterns(html))
     }
   }
 
@@ -231,10 +275,10 @@ export async function scanApp(appId: string, launchUrl: string): Promise<ScanRes
     fetched:           !!launchUrl,
     contentLength:     0,
     xss: {
-      cookieTheftDetected:  threats.some(t => t.type === 'COOKIE_THEFT'),
-      storageTheftDetected: threats.some(t => t.type === 'STORAGE_EXFILTRATION'),
+      cookieTheftDetected:  threats.some(t => t.type === 'COOKIE_THEFT' || t.type === 'COOKIE_ACCESS'),
+      storageTheftDetected: threats.some(t => t.type === 'STORAGE_EXFILTRATION' || t.type === 'STORAGE_ACCESS'),
     },
-    obfuscatedContent: threats.some(t => t.type === 'MALICIOUS_OBFUSCATION'),
+    obfuscatedContent: threats.some(t => t.type === 'MALICIOUS_OBFUSCATION' || t.type === 'EVAL_USAGE' || t.type === 'ATOB_USAGE'),
     payment:       { untrustedCCCollection: false, trustedGatewayDetected: false, trustedGateways: [], hasPaymentFields: false, details: [] },
     phishing:      { suspiciousFormActions: threats.some(t => t.type === 'PHISHING_FORM'), externalFormActions: [], details: [] },
     identityTheft: { sensitiveFieldsFound: false, sensitiveFields: [], details: [] },
