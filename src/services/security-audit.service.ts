@@ -385,7 +385,7 @@ const ADULT_RESTRICTED_TERMS: string[] = [
   // Live-streaming adult jargon
   'sex cam', 'sex webcam', 'adult webcam', 'cam girl show', 'live nude',
   // Creator-economy adult terms
-  'onlyfans model', 'only fans model', 'fansly model',
+  'onlyfans model', 'only fans model', 'fansly model', 'onlyfans', 'leaked', 'pornstars', 'thots', 'sex video',
   // Classification strings sites put in their own metadata
   'adult entertainment site', 'adult content site', 'explicit content',
 ]
