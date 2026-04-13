@@ -241,7 +241,7 @@ export async function appsRouter(app: FastifyInstance) {
         void securityLogger.adminAction(request, 'app_security_held', 'App', appId, {
           reason: 'Malicious content detected at submission', threats: threatDetails,
         })
-        return reply.status(422).send({
+        return reply.code(422).send({
           success: false,
           error: { message: 'App rejected by security scan.', details: threatDetails },
         })

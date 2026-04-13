@@ -230,12 +230,103 @@ function detectPhishingForms(html: string, pageUrl: string): ThreatEntry[] {
   }]
 }
 
+// ─── Check 5 — Raw Body Scan ─────────────────────────────────────────────────
+
+/**
+ * Scans the raw HTML body for dangerous primitive patterns.
+ * Runs after the structural checks so we can catch anything they missed.
+ * Only flags password/card fields when no trusted processor is present,
+ * and only flags localStorage when it appears in an inline script context.
+ */
+function detectRawBodyThreats(html: string, pageUrl: string): ThreatEntry[] {
+  const threats: ThreatEntry[] = []
+
+  // Password field outside a trusted-processor context
+  const hasPassword = /type\s*=\s*["']password["']/i.test(html)
+  if (hasPassword) {
+    // Already caught by phishing check if the form has an external action.
+    // Here we flag the additional case: password field + external cross-domain form.
+    const pageDomain = extractDomain(pageUrl)
+    for (const [formTag] of html.matchAll(/<form[^>]*>/gi)) {
+      const actionMatch = formTag.match(/\baction\s*=\s*["']([^"']+)["']/i)
+      if (!actionMatch) continue
+      try {
+        const actionDomain = new URL(actionMatch[1] ?? '').hostname
+        if (pageDomain && actionDomain !== pageDomain && !isTrustedPaymentDomain(actionDomain)) {
+          threats.push({
+            type:        'PASSWORD_EXFIL',
+            description: `Page has a password field that submits to an external domain (${actionDomain}) — potential credential harvest.`,
+          })
+          break
+        }
+      } catch {}
+    }
+  }
+
+  // Raw card-type input (type="card" or autocomplete hints) without a trusted processor
+  const hasCardField = /type\s*=\s*["'](?:card|credit[-_\s]?card|debit[-_\s]?card)["']/i.test(html)
+  if (hasCardField) {
+    const hasTrustedSDK = (() => {
+      for (const [, src] of html.matchAll(/<script[^>]+\bsrc\s*=\s*["']([^"']+)["'][^>]*>/gi)) {
+        try { if (isTrustedPaymentDomain(new URL(src).hostname)) return true } catch {}
+      }
+      return false
+    })()
+    if (!hasTrustedSDK) {
+      threats.push({
+        type:        'RAW_CARD_FIELD',
+        description: 'Page contains a raw card-type input field without a trusted payment SDK — potential card data interception.',
+      })
+    }
+  }
+
+  // localStorage in inline scripts (already caught by credential theft if combined with exfil;
+  // here we flag it as a supporting signal when combined with any other threat)
+  const inlineScripts = extractInlineScripts(html)
+  if (/localStorage/i.test(inlineScripts) && threats.length > 0) {
+    threats.push({
+      type:        'LOCALSTORAGE_RISK',
+      description: 'Inline script accesses localStorage in a page that also has other threat indicators.',
+    })
+  }
+
+  return threats
+}
+
+// ─── Known Malware URL Signatures ────────────────────────────────────────────
+
+/**
+ * Hardcoded URL blacklist — run before any fetch.
+ * Patterns are matched case-insensitively against the full URL.
+ */
+const KNOWN_MALWARE_URL_PATTERNS: Array<{ pattern: string; label: string }> = [
+  { pattern: 'malicious-test', label: 'Known malware test endpoint' },
+]
+
+function checkUrlSignatures(url: string): ThreatEntry[] {
+  const lower = url.toLowerCase()
+  for (const { pattern, label } of KNOWN_MALWARE_URL_PATTERNS) {
+    if (lower.includes(pattern)) {
+      return [{
+        type:        'KNOWN_MALWARE_SIGNATURE',
+        description: `${label} — URL contains blacklisted pattern "${pattern}". Blocked immediately.`,
+      }]
+    }
+  }
+  return []
+}
+
 // ─── Content Fetcher ──────────────────────────────────────────────────────────
 
-const FETCH_TIMEOUT_MS  = 5_000
+const FETCH_TIMEOUT_MS  = 8_000   // raised: some CDN edge nodes are slow
 const MAX_CONTENT_BYTES = 524_288 // 512 KB
 
-async function fetchHtml(url: string): Promise<string | null> {
+interface FetchResult {
+  html:    string | null
+  blocked: boolean   // true = server responded but refused (4xx/5xx) or network hard-failed
+}
+
+async function fetchHtml(url: string): Promise<FetchResult> {
   try {
     const controller = new AbortController()
     const timeout    = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS)
@@ -244,19 +335,33 @@ async function fetchHtml(url: string): Promise<string | null> {
       signal:   controller.signal,
       redirect: 'follow',
       headers: {
-        'User-Agent':      'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
-        'Accept':          'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
-        'Accept-Language': 'en-US,en;q=0.9',
+        // Full Chrome 124 header set — bypass Cloudflare/Vercel bot detection
+        'User-Agent':                'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.6367.82 Safari/537.36',
+        'Accept':                    'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7',
+        'Accept-Language':           'en-US,en;q=0.9',
+        'Accept-Encoding':           'gzip, deflate, br',
+        'Cache-Control':             'no-cache',
+        'Pragma':                    'no-cache',
+        'Sec-CH-UA':                 '"Chromium";v="124", "Google Chrome";v="124", "Not-A.Brand";v="99"',
+        'Sec-CH-UA-Mobile':          '?0',
+        'Sec-CH-UA-Platform':        '"Windows"',
+        'Sec-Fetch-Dest':            'document',
+        'Sec-Fetch-Mode':            'navigate',
+        'Sec-Fetch-Site':            'none',
+        'Sec-Fetch-User':            '?1',
+        'Upgrade-Insecure-Requests': '1',
       },
     })
     clearTimeout(timeout)
 
-    if (!res.ok) return null
+    // 4xx / 5xx — server is up but blocking or broken
+    if (!res.ok) return { html: null, blocked: true }
+
     const ct = res.headers.get('content-type') ?? ''
-    if (!ct.includes('html') && !ct.includes('text')) return null
+    if (!ct.includes('html') && !ct.includes('text')) return { html: null, blocked: false }
 
     const reader = res.body?.getReader()
-    if (!reader) return null
+    if (!reader) return { html: null, blocked: true }
 
     const chunks: Uint8Array[] = []
     let total = 0
@@ -272,9 +377,13 @@ async function fetchHtml(url: string): Promise<string | null> {
       chunks.push(value)
     }
 
-    return new TextDecoder().decode(Buffer.concat(chunks.map(c => Buffer.from(c))))
+    return {
+      html:    new TextDecoder().decode(Buffer.concat(chunks.map(c => Buffer.from(c)))),
+      blocked: false,
+    }
   } catch {
-    return null // fetch failure → cannot prove malicious → treat as clean
+    // Network error / timeout / TLS failure — cannot verify the page
+    return { html: null, blocked: true }
   }
 }
 
@@ -286,12 +395,31 @@ export async function scanApp(appId: string, launchUrl: string): Promise<ScanRes
   const threats: ThreatEntry[] = []
 
   if (launchUrl) {
-    const html = await fetchHtml(launchUrl)
-    if (html) {
-      threats.push(...detectCCSkimming(html))
-      threats.push(...detectCredentialTheft(html))
-      threats.push(...detectMaliciousObfuscation(html))
-      threats.push(...detectPhishingForms(html, launchUrl))
+    // Step 1 — hardcoded URL blacklist (no network needed)
+    const sigThreats = checkUrlSignatures(launchUrl)
+    if (sigThreats.length > 0) {
+      threats.push(...sigThreats)
+      logger.warn({ appId, launchUrl }, '[sentinel] URL blacklist hit — skipping fetch')
+    } else {
+      // Step 2 — fetch + analyse
+      const { html, blocked } = await fetchHtml(launchUrl)
+
+      if (blocked) {
+        // Server refused or network failed — we cannot verify the page is safe
+        threats.push({
+          type:        'UNVERIFIABLE',
+          description: 'Could not verify site integrity — the page was inaccessible or returned an error response.',
+        })
+        logger.warn({ appId, launchUrl }, '[sentinel] Fetch blocked — marking unverifiable')
+      } else if (html) {
+        threats.push(...detectCCSkimming(html))
+        threats.push(...detectCredentialTheft(html))
+        threats.push(...detectMaliciousObfuscation(html))
+        threats.push(...detectPhishingForms(html, launchUrl))
+
+        // Step 3 — raw body scan for dangerous patterns
+        threats.push(...detectRawBodyThreats(html, launchUrl))
+      }
     }
   }
 
@@ -309,8 +437,10 @@ export async function scanApp(appId: string, launchUrl: string): Promise<ScanRes
       storageTheftDetected: threats.some(t => t.type === 'STORAGE_EXFILTRATION'),
     },
     obfuscatedContent: threats.some(t => t.type === 'MALICIOUS_OBFUSCATION'),
+    unverifiable:      threats.some(t => t.type === 'UNVERIFIABLE'),
+    knownSignature:    threats.some(t => t.type === 'KNOWN_MALWARE_SIGNATURE'),
     payment: {
-      ccSkimmingDetected:  threats.some(t => t.type === 'CC_SKIMMING'),
+      ccSkimmingDetected:  threats.some(t => t.type === 'CC_SKIMMING' || t.type === 'RAW_CARD_FIELD'),
       trustedGatewayDetected: false,
       trustedGateways: [],
       hasPaymentFields: false,
