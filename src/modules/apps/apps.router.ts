@@ -4,6 +4,7 @@ import { UserRole } from '@prisma/client'
 import { appsService } from './apps.service'
 import { appsRepository } from './apps.repository'
 import { launchEventsRepository } from '../launch-events/launch-events.repository'
+import { scanApp } from '../../services/security-audit.service'
 import {
   CreateAppBodySchema,
   ListAppsQuerySchema,
@@ -169,9 +170,41 @@ export async function appsRouter(app: FastifyInstance) {
     { preHandler: [app.requireRole([UserRole.CREATOR])] },
     async (request, reply) => {
       const creator = await appsService.resolveCreator(request.user.sub)
-      const { id } = request.params as { id: string }
-      const data = await appsService.submit(id, creator.id)
-      return reply.send({ success: true, data })
+      const { id }  = request.params as { id: string }
+
+      // 1. Transition DRAFT → SUBMITTED (validates ownership + state machine)
+      const submitted = await appsService.submit(id, creator.id)
+
+      // 2. Synchronous security scan — 5 s timeout baked into the service.
+      //    Fail-safe: any fetch failure or thrown error defaults to PUBLISHED.
+      let malicious = false
+      let threatDetails: string[] = []
+
+      try {
+        const result = await scanApp(id, submitted.launchUrl ?? '')
+        if (result.malicious) {
+          malicious     = true
+          threatDetails = result.threats.map(t => t.description)
+        }
+      } catch {
+        // Scan error → cannot prove malicious → publish (fail-safe)
+        malicious = false
+      }
+
+      // 3a. Malicious — keep as SUBMITTED and reject with 422
+      if (malicious) {
+        return reply.status(422).send({
+          success: false,
+          error: {
+            message: 'App rejected by security scan.',
+            details: threatDetails,
+          },
+        })
+      }
+
+      // 3b. Clean (or scan failed) — auto-publish immediately
+      const published = await appsService.adminApprove(id)
+      return reply.send({ success: true, autoPublished: true, data: published })
     },
   )
 

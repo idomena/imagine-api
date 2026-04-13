@@ -114,7 +114,7 @@ function detectMaliciousObfuscation(html: string): ThreatEntry[] {
 
 // ─── Content Fetcher ──────────────────────────────────────────────────────────
 
-const FETCH_TIMEOUT_MS  = 12_000
+const FETCH_TIMEOUT_MS  = 5_000
 const MAX_CONTENT_BYTES = 524_288 // 512 KB
 
 async function fetchHtml(url: string): Promise<string | null> {
@@ -126,8 +126,9 @@ async function fetchHtml(url: string): Promise<string | null> {
       signal:   controller.signal,
       redirect: 'follow',
       headers: {
-        'User-Agent': 'Mozilla/5.0 (compatible; SentinelBot/2.0)',
-        'Accept':     'text/html,*/*',
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+        'Accept':     'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
+        'Accept-Language': 'en-US,en;q=0.9',
       },
     })
     clearTimeout(timeout)
@@ -160,6 +161,48 @@ async function fetchHtml(url: string): Promise<string | null> {
   }
 }
 
+// ─── Phishing Form Detector ───────────────────────────────────────────────────
+
+/**
+ * Check 3 — Phishing Forms
+ * Detects forms that collect credentials (password / email inputs) and POST
+ * them to an external domain — the hallmark of a credential-harvesting page.
+ */
+function detectPhishingForms(html: string, pageUrl: string): ThreatEntry[] {
+  const pageDomain = extractDomain(pageUrl)
+
+  // Find all <form> tags and their action attributes
+  const formMatches = [...html.matchAll(/<form[^>]*>/gi)]
+  const suspiciousActions: string[] = []
+
+  for (const [formTag] of formMatches) {
+    const actionMatch = formTag.match(/\baction\s*=\s*["']([^"']+)["']/i)
+    if (!actionMatch) continue
+    const action = actionMatch[1] ?? ''
+    if (!action || action.startsWith('#') || action.startsWith('/') || action.startsWith('?')) continue
+
+    try {
+      const actionDomain = new URL(action).hostname
+      if (pageDomain && actionDomain !== pageDomain) {
+        suspiciousActions.push(action)
+      }
+    } catch { /* relative or malformed URL */ }
+  }
+
+  if (suspiciousActions.length === 0) return []
+
+  // Only flag if the page also has password or hidden email inputs
+  const hasPasswordField = /<input[^>]*\btype\s*=\s*["']password["'][^>]*>/i.test(html)
+  const hasEmailField    = /<input[^>]*\btype\s*=\s*["']email["'][^>]*>/i.test(html)
+
+  if (!hasPasswordField && !hasEmailField) return []
+
+  return [{
+    type:        'PHISHING_FORM',
+    description: `Form collects credentials (${hasPasswordField ? 'password' : 'email'} field) and submits to an external domain: ${suspiciousActions[0]?.slice(0, 80)} — credential harvesting pattern.`,
+  }]
+}
+
 // ─── Public API ───────────────────────────────────────────────────────────────
 
 export async function scanApp(appId: string, launchUrl: string): Promise<ScanResult> {
@@ -173,6 +216,7 @@ export async function scanApp(appId: string, launchUrl: string): Promise<ScanRes
     if (html) {
       threats.push(...detectCredentialTheft(html))
       threats.push(...detectMaliciousObfuscation(html))
+      threats.push(...detectPhishingForms(html, launchUrl))
     }
   }
 
@@ -192,7 +236,7 @@ export async function scanApp(appId: string, launchUrl: string): Promise<ScanRes
     },
     obfuscatedContent: threats.some(t => t.type === 'MALICIOUS_OBFUSCATION'),
     payment:       { untrustedCCCollection: false, trustedGatewayDetected: false, trustedGateways: [], hasPaymentFields: false, details: [] },
-    phishing:      { suspiciousFormActions: false, externalFormActions: [], details: [] },
+    phishing:      { suspiciousFormActions: threats.some(t => t.type === 'PHISHING_FORM'), externalFormActions: [], details: [] },
     identityTheft: { sensitiveFieldsFound: false, sensitiveFields: [], details: [] },
     clickjacking:  { suspiciousOverlayDetected: false, details: [] },
   }
