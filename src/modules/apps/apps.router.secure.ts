@@ -231,21 +231,13 @@ export async function appsRouter(app: FastifyInstance) {
       }
 
       const now   = new Date()
-      const appId = existing.id   // same as route :id param — explicit for clarity
-
-      console.log('--- SENTINEL DEBUG START ---')
-      console.log('Route param id     :', id)
-      console.log('Targeting App ID   :', appId)
-      console.log('Existing status    :', existing.status)
-      console.log('Malicious          :', malicious)
+      const appId = existing.id
 
       if (malicious) {
-        const heldApp = await db.app.update({
+        await db.app.update({
           where: { id: appId },
           data:  { status: AppStatus.SUBMITTED, submittedAt: now },
         })
-        console.log('DB Update Result Status (HELD):', heldApp.status)
-        console.log('--- SENTINEL DEBUG END ---')
         void securityLogger.adminAction(request, 'app_security_held', 'App', appId, {
           reason: 'Malicious content detected at submission', threats: threatDetails,
         })
@@ -267,21 +259,19 @@ export async function appsRouter(app: FastifyInstance) {
             publishedAt: now,
           },
         })
-        console.log('DB Update Result Status:', updatedApp.status)
-        console.log('DB Update publishedAt  :', updatedApp.publishedAt)
       } catch (dbErr) {
-        console.log('DB UPDATE THREW ERROR  :', dbErr)
-        console.log('--- SENTINEL DEBUG END ---')
-        throw dbErr
+        logger.error({ err: dbErr, appId }, '[sentinel] DB publish failed — returning 400')
+        return reply.status(400).send({
+          success: false,
+          error: { message: 'Failed to publish app — database error. Please try again.' },
+        })
       }
-
-      console.log('--- SENTINEL DEBUG END ---')
 
       void securityLogger.adminAction(request, 'app_auto_published', 'App', appId, {
         reason: 'Sentinel scan passed — auto-published',
       })
 
-      return reply.send({ success: true, autoPublished: true, data: updatedApp })
+      return reply.send({ success: true, autoPublished: true, app: updatedApp })
     },
   )
 
