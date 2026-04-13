@@ -189,12 +189,14 @@ export async function appsRouter(app: FastifyInstance) {
     },
   )
 
-  // ── Creator: submit — Direct Scan-to-Publish ────────────────────────────
-  // No state-machine intermediaries. Flow:
-  //   1. Verify ownership (appsService.get + creatorId check)
-  //   2. await scanApp()  — 5 s Chrome UA fetch; fail-safe = clean on any error
-  //   3a. SAFE     → db.app.update PUBLISHED  (submittedAt + approvedAt + publishedAt = now)
-  //   3b. MALICIOUS → db.app.update SUBMITTED (held for manual review) + 422
+  // ── Creator: submit — Security-First Atomic Publish ──────────────────────
+  // Refactored to eliminate Ghost Drafts. Flow:
+  //   1. Verify creator ownership
+  //   2. RUN SECURITY AUDIT FIRST — before any database operations
+  //   3a. ADULT_CONTENT detected  → return 422 IMMEDIATELY, no DB writes
+  //   3b. OTHER MALICIOUS CONTENT → update to SUBMITTED for manual review
+  //   3c. CLEAN SCAN              → single atomic update to PUBLISHED with all timestamps
+  // Key: No database operations occur until security result is confirmed.
 
   app.post(
     '/:id/submit',
@@ -212,73 +214,67 @@ export async function appsRouter(app: FastifyInstance) {
         return reply.status(403).send({ success: false, error: { message: 'Forbidden' } })
       }
 
-      // ── RESET STATE: Fully initialize threat tracking for this scan ──
+      // ── SECURITY FIRST: Run audit before any database operations ──
       let malicious      = false
       let isAdultContent = false
       let threatDetails: string[] = []
 
-      // Security scan — synchronous, 5 s timeout inside the service
       try {
         const result = await scanApp(id, existing.launchUrl ?? '')
         if (result.malicious) {
           malicious      = true
-          // Explicitly separate adult vs non-adult threats
           isAdultContent = result.threats.some(t => t.type === 'ADULT_CONTENT')
           threatDetails  = result.threats.map(t => t.description)
           void securityLogger.threatDetected(request, id,
             result.threats.map(t => ({ uri: existing.launchUrl ?? '', types: [t.type] }))
           )
         } else {
-          // CLEAN SCAN: Explicitly reset threat state to ensure no bleed-through
           malicious      = false
           isAdultContent = false
           threatDetails  = []
         }
       } catch (err) {
         logger.error({ err, id }, '[sentinel] Scan error — fail-safe: publishing anyway')
-        // RESET STATE: If scan crashes, explicitly treat as clean (fail-safe)
         malicious      = false
         isAdultContent = false
         threatDetails  = []
       }
 
-      const now   = new Date()
-      const appId = existing.id
+      // ── IMMEDIATE BLOCK: Adult content detected → error without DB writes ──
+      if (isAdultContent) {
+        void securityLogger.adminAction(request, 'app_adult_content_blocked', 'App', id, {
+          reason: 'Adult content detected during submission scan',
+        })
+        return reply.code(422).send({
+          success: false,
+          error: {
+            message: 'Content Violation — Adult content is not allowed on Imagine.',
+            details: ['Content Violation — Adult content is not allowed on Imagine.'],
+          },
+        })
+      }
 
+      const now = new Date()
+
+      // ── Handle other malicious content (non-adult threats) ──
       if (malicious) {
-        if (isAdultContent) {
-          // ── DATABASE CLEANUP: Immediately delete adult content app ──
-          // Delete FIRST, then respond — ensures DB is clean before next scan
-          let deletionSucceeded = false
-          try {
-            await db.app.delete({ where: { id: appId } })
-            deletionSucceeded = true
-            logger.info({ appId }, '[sentinel] Adult content app deleted successfully')
-          } catch (delErr) {
-            logger.error({ err: delErr, appId }, '[sentinel] Adult content: app deletion failed')
-            // Still return 422 even if deletion failed — the app is flagged as unsafe
-          }
-
-          void securityLogger.adminAction(request, 'app_adult_content_blocked', 'App', appId, {
-            reason: 'Adult content detected — app permanently deleted',
-            deletionSucceeded,
+        // Non-adult malicious content — single atomic update to SUBMITTED
+        try {
+          await db.app.update({
+            where: { id },
+            data: { status: AppStatus.SUBMITTED, submittedAt: now },
           })
-          return reply.code(422).send({
+        } catch (dbErr) {
+          logger.error({ err: dbErr, id }, '[sentinel] DB update to SUBMITTED failed')
+          return reply.status(400).send({
             success: false,
-            error: {
-              message: 'Content Violation — Adult content is not allowed on Imagine.',
-              details: ['Content Violation — Adult content is not allowed on Imagine.'],
-            },
+            error: { message: 'Failed to process security hold — database error.' },
           })
         }
 
-        // Non-adult malicious content — hold for manual moderator review
-        await db.app.update({
-          where: { id: appId },
-          data:  { status: AppStatus.SUBMITTED, submittedAt: now },
-        })
-        void securityLogger.adminAction(request, 'app_security_held', 'App', appId, {
-          reason: 'Malicious content detected at submission', threats: threatDetails,
+        void securityLogger.adminAction(request, 'app_security_held', 'App', id, {
+          reason: 'Malicious content detected at submission',
+          threats: threatDetails,
         })
         return reply.code(422).send({
           success: false,
@@ -286,34 +282,33 @@ export async function appsRouter(app: FastifyInstance) {
         })
       }
 
-      // ── EXPLICIT STATUS: Clean scan → PUBLISHED (unconditional) ──
-      // This block only executes if malicious === false (verified above)
-      let updatedApp
+      // ── CLEAN SCAN: Single atomic operation to PUBLISHED ──
+      // All timestamps set in one operation to avoid ghost drafts
+      let publishedApp
       try {
-        updatedApp = await db.app.update({
-          where: { id: appId },
+        publishedApp = await db.app.update({
+          where: { id },
           data: {
-            // EXPLICIT: Status is PUBLISHED — not draft, not held, not conditional
             status:      AppStatus.PUBLISHED,
             submittedAt: now,
             approvedAt:  now,
             publishedAt: now,
           },
         })
-        logger.info({ appId }, '[sentinel] Clean scan: app auto-published')
+        logger.info({ id }, '[sentinel] Clean scan: app published in single atomic operation')
       } catch (dbErr) {
-        logger.error({ err: dbErr, appId }, '[sentinel] DB publish failed — returning 400')
+        logger.error({ err: dbErr, id }, '[sentinel] DB publish failed')
         return reply.status(400).send({
           success: false,
           error: { message: 'Failed to publish app — database error. Please try again.' },
         })
       }
 
-      void securityLogger.adminAction(request, 'app_auto_published', 'App', appId, {
-        reason: 'Sentinel scan passed — auto-published',
+      void securityLogger.adminAction(request, 'app_auto_published', 'App', id, {
+        reason: 'Security scan passed — auto-published in atomic operation',
       })
 
-      return reply.send({ success: true, autoPublished: true, app: updatedApp })
+      return reply.send({ success: true, autoPublished: true, app: publishedApp })
     },
   )
 
