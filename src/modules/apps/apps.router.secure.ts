@@ -212,24 +212,34 @@ export async function appsRouter(app: FastifyInstance) {
         return reply.status(403).send({ success: false, error: { message: 'Forbidden' } })
       }
 
-      // Security scan — synchronous, 5 s timeout inside the service
+      // ── RESET STATE: Fully initialize threat tracking for this scan ──
       let malicious      = false
       let isAdultContent = false
       let threatDetails: string[] = []
 
+      // Security scan — synchronous, 5 s timeout inside the service
       try {
         const result = await scanApp(id, existing.launchUrl ?? '')
         if (result.malicious) {
           malicious      = true
+          // Explicitly separate adult vs non-adult threats
           isAdultContent = result.threats.some(t => t.type === 'ADULT_CONTENT')
           threatDetails  = result.threats.map(t => t.description)
           void securityLogger.threatDetected(request, id,
             result.threats.map(t => ({ uri: existing.launchUrl ?? '', types: [t.type] }))
           )
+        } else {
+          // CLEAN SCAN: Explicitly reset threat state to ensure no bleed-through
+          malicious      = false
+          isAdultContent = false
+          threatDetails  = []
         }
       } catch (err) {
         logger.error({ err, id }, '[sentinel] Scan error — fail-safe: publishing anyway')
-        malicious = false
+        // RESET STATE: If scan crashes, explicitly treat as clean (fail-safe)
+        malicious      = false
+        isAdultContent = false
+        threatDetails  = []
       }
 
       const now   = new Date()
@@ -237,14 +247,21 @@ export async function appsRouter(app: FastifyInstance) {
 
       if (malicious) {
         if (isAdultContent) {
-          // Hard block — delete the app entirely so it never appears in the DB
+          // ── DATABASE CLEANUP: Immediately delete adult content app ──
+          // Delete FIRST, then respond — ensures DB is clean before next scan
+          let deletionSucceeded = false
           try {
             await db.app.delete({ where: { id: appId } })
+            deletionSucceeded = true
+            logger.info({ appId }, '[sentinel] Adult content app deleted successfully')
           } catch (delErr) {
             logger.error({ err: delErr, appId }, '[sentinel] Adult content: app deletion failed')
+            // Still return 422 even if deletion failed — the app is flagged as unsafe
           }
+
           void securityLogger.adminAction(request, 'app_adult_content_blocked', 'App', appId, {
             reason: 'Adult content detected — app permanently deleted',
+            deletionSucceeded,
           })
           return reply.code(422).send({
             success: false,
@@ -269,18 +286,21 @@ export async function appsRouter(app: FastifyInstance) {
         })
       }
 
-      // Clean — publish directly in one atomic write
+      // ── EXPLICIT STATUS: Clean scan → PUBLISHED (unconditional) ──
+      // This block only executes if malicious === false (verified above)
       let updatedApp
       try {
         updatedApp = await db.app.update({
           where: { id: appId },
           data: {
+            // EXPLICIT: Status is PUBLISHED — not draft, not held, not conditional
             status:      AppStatus.PUBLISHED,
             submittedAt: now,
             approvedAt:  now,
             publishedAt: now,
           },
         })
+        logger.info({ appId }, '[sentinel] Clean scan: app auto-published')
       } catch (dbErr) {
         logger.error({ err: dbErr, appId }, '[sentinel] DB publish failed — returning 400')
         return reply.status(400).send({
