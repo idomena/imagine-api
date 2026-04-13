@@ -1,9 +1,10 @@
 import { createHash } from 'crypto'
 import type { FastifyInstance } from 'fastify'
-import { UserRole } from '@prisma/client'
+import { AppStatus, UserRole } from '@prisma/client'
 import { appsService } from './apps.service'
 import { appsRepository } from './apps.repository'
 import { launchEventsRepository } from '../launch-events/launch-events.repository'
+import { db } from '../../core/db'
 import {
   CreateAppBodySchema,
   ListAppsQuerySchema,
@@ -188,13 +189,12 @@ export async function appsRouter(app: FastifyInstance) {
     },
   )
 
-  // ── Creator: submit — Scan-then-Publish ─────────────────────────────────
-  // Synchronous flow:
-  //   1. DRAFT → SUBMITTED  (appsService.submit — validates ownership + state machine)
-  //   2. await scanApp()    (5 s timeout, Chrome UA, checks XSS / obfuscation / phishing)
-  //   3a. SAFE     → SUBMITTED → PUBLISHED  (appsService.adminApprove)
-  //   3b. MALICIOUS → stay SUBMITTED, return 422 with threat details
-  //   3c. scan error/timeout → fail-safe: treat as SAFE, publish
+  // ── Creator: submit — Direct Scan-to-Publish ────────────────────────────
+  // No state-machine intermediaries. Flow:
+  //   1. Verify ownership (appsService.get + creatorId check)
+  //   2. await scanApp()  — 5 s Chrome UA fetch; fail-safe = clean on any error
+  //   3a. SAFE     → db.app.update PUBLISHED  (submittedAt + approvedAt + publishedAt = now)
+  //   3b. MALICIOUS → db.app.update SUBMITTED (held for manual review) + 422
 
   app.post(
     '/:id/submit',
@@ -203,48 +203,59 @@ export async function appsRouter(app: FastifyInstance) {
       config:     { rateLimit: SUBMIT_RATE_LIMIT },
     },
     async (request, reply) => {
-      const creator = await appsService.resolveCreator(request.user.sub)
-      const { id }  = request.params as { id: string }
+      const creator  = await appsService.resolveCreator(request.user.sub)
+      const { id }   = request.params as { id: string }
+      const existing = await appsService.get(id)
 
-      // Step 1 — DRAFT → SUBMITTED (state machine validates ownership + transition)
-      const submitted = await appsService.submit(id, creator.id)
+      if (existing.creatorId !== creator.id) {
+        return reply.status(403).send({ success: false, error: { message: 'Forbidden' } })
+      }
 
-      // Step 2 — synchronous security scan
+      // Security scan — synchronous, 5 s timeout inside the service
       let malicious     = false
       let threatDetails: string[] = []
 
       try {
-        const result = await scanApp(id, submitted.launchUrl ?? '')
+        const result = await scanApp(id, existing.launchUrl ?? '')
         if (result.malicious) {
           malicious     = true
           threatDetails = result.threats.map(t => t.description)
           void securityLogger.threatDetected(request, id,
-            result.threats.map(t => ({ uri: submitted.launchUrl ?? '', types: [t.type] }))
+            result.threats.map(t => ({ uri: existing.launchUrl ?? '', types: [t.type] }))
           )
         }
       } catch (err) {
-        // Scan error / timeout → cannot prove malicious → publish (fail-safe)
         logger.error({ err, id }, '[sentinel] Scan error — fail-safe: publishing anyway')
         malicious = false
       }
 
-      // Step 3a — malicious: hold in SUBMITTED, surface to creator as 422
+      const now = new Date()
+
       if (malicious) {
+        // Hold in SUBMITTED for manual review
+        await db.app.update({
+          where: { id },
+          data:  { status: AppStatus.SUBMITTED, submittedAt: now },
+        })
         void securityLogger.adminAction(request, 'app_security_held', 'App', id, {
-          reason:  'Malicious content detected at submission',
-          threats: threatDetails,
+          reason: 'Malicious content detected at submission', threats: threatDetails,
         })
         return reply.status(422).send({
           success: false,
-          error: {
-            message: 'App rejected by security scan.',
-            details: threatDetails,
-          },
+          error: { message: 'App rejected by security scan.', details: threatDetails },
         })
       }
 
-      // Step 3b — clean (or unreachable): SUBMITTED → PUBLISHED via service layer
-      const published = await appsService.adminApprove(id)
+      // Clean — publish directly in one atomic write
+      const published = await db.app.update({
+        where: { id },
+        data: {
+          status:      AppStatus.PUBLISHED,
+          submittedAt: now,
+          approvedAt:  now,
+          publishedAt: now,
+        },
+      })
       void securityLogger.adminAction(request, 'app_auto_published', 'App', id, {
         reason: 'Sentinel scan passed — auto-published',
       })
