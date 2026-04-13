@@ -32,12 +32,16 @@ export interface ThreatEntry {
   description: string
 }
 
+export type ScanStatus = 'Clean' | 'Malicious' | 'Protected'
+
 export interface ScanResult {
   appId:     string
   url:       string
   scannedAt: string
-  malicious: boolean
+  status:    ScanStatus
+  malicious: boolean          // kept for backward-compat — true iff status === 'Malicious'
   threats:   ThreatEntry[]
+  meta:      SiteMeta | null
 }
 
 // ─── Payment Processor Whitelist ──────────────────────────────────────────────
@@ -317,6 +321,49 @@ function checkUrlSignatures(url: string): ThreatEntry[] {
   return []
 }
 
+// ─── Metadata Extraction ──────────────────────────────────────────────────────
+
+export interface SiteMeta {
+  title:       string | null
+  description: string | null
+  logo:        string | null
+}
+
+/** Resolve a potentially relative URL against the page origin. */
+function resolveUrl(href: string, baseUrl: string): string | null {
+  try { return new URL(href, baseUrl).href } catch { return null }
+}
+
+function extractMetadata(html: string, pageUrl: string): SiteMeta {
+  // title — prefer og:title, fallback to <title>
+  const ogTitle    = html.match(/<meta[^>]+property\s*=\s*["']og:title["'][^>]+content\s*=\s*["']([^"']+)["'][^>]*>/i)?.[1]
+                  ?? html.match(/<meta[^>]+content\s*=\s*["']([^"']+)["'][^>]+property\s*=\s*["']og:title["'][^>]*>/i)?.[1]
+  const tagTitle   = html.match(/<title[^>]*>([^<]{1,200})<\/title>/i)?.[1]?.trim()
+  const title      = (ogTitle ?? tagTitle ?? null)?.replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&#039;/g, "'").trim() || null
+
+  // description — prefer og:description, fallback to meta description
+  const ogDesc     = html.match(/<meta[^>]+property\s*=\s*["']og:description["'][^>]+content\s*=\s*["']([^"']{1,400})["'][^>]*>/i)?.[1]
+                  ?? html.match(/<meta[^>]+content\s*=\s*["']([^"']{1,400})["'][^>]+property\s*=\s*["']og:description["'][^>]*>/i)?.[1]
+  const metaDesc   = html.match(/<meta[^>]+name\s*=\s*["']description["'][^>]+content\s*=\s*["']([^"']{1,400})["'][^>]*>/i)?.[1]
+                  ?? html.match(/<meta[^>]+content\s*=\s*["']([^"']{1,400})["'][^>]+name\s*=\s*["']description["'][^>]*>/i)?.[1]
+  const description = (ogDesc ?? metaDesc ?? null)?.trim() || null
+
+  // logo — priority: apple-touch-icon > og:image > shortcut icon > icon
+  const appleTouchIcon = html.match(/<link[^>]+rel\s*=\s*["']apple-touch-icon["'][^>]+href\s*=\s*["']([^"']+)["'][^>]*>/i)?.[1]
+                      ?? html.match(/<link[^>]+href\s*=\s*["']([^"']+)["'][^>]+rel\s*=\s*["']apple-touch-icon["'][^>]*>/i)?.[1]
+  const ogImage       = html.match(/<meta[^>]+property\s*=\s*["']og:image["'][^>]+content\s*=\s*["']([^"']+)["'][^>]*>/i)?.[1]
+                      ?? html.match(/<meta[^>]+content\s*=\s*["']([^"']+)["'][^>]+property\s*=\s*["']og:image["'][^>]*>/i)?.[1]
+  const shortcutIcon  = html.match(/<link[^>]+rel\s*=\s*["']shortcut icon["'][^>]+href\s*=\s*["']([^"']+)["'][^>]*>/i)?.[1]
+                      ?? html.match(/<link[^>]+href\s*=\s*["']([^"']+)["'][^>]+rel\s*=\s*["']shortcut icon["'][^>]*>/i)?.[1]
+  const favicon       = html.match(/<link[^>]+rel\s*=\s*["']icon["'][^>]+href\s*=\s*["']([^"']+)["'][^>]*>/i)?.[1]
+                      ?? html.match(/<link[^>]+href\s*=\s*["']([^"']+)["'][^>]+rel\s*=\s*["']icon["'][^>]*>/i)?.[1]
+
+  const rawLogo = appleTouchIcon ?? ogImage ?? shortcutIcon ?? favicon ?? null
+  const logo    = rawLogo ? resolveUrl(rawLogo, pageUrl) : null
+
+  return { title, description, logo }
+}
+
 // ─── Content Fetcher ──────────────────────────────────────────────────────────
 
 const FETCH_TIMEOUT_MS  = 8_000   // raised: some CDN edge nodes are slow
@@ -393,7 +440,9 @@ async function fetchHtml(url: string): Promise<FetchResult> {
 export async function scanApp(appId: string, launchUrl: string): Promise<ScanResult> {
   logger.info({ appId, launchUrl }, '[sentinel] Scan started')
 
-  const threats: ThreatEntry[] = []
+  const threats:   ThreatEntry[] = []
+  let   protected_ = false          // site blocked our fetch — can't verify, but not malicious
+  let   meta:      SiteMeta | null = null
 
   if (launchUrl) {
     // Step 1 — hardcoded URL blacklist (no network needed)
@@ -406,13 +455,14 @@ export async function scanApp(appId: string, launchUrl: string): Promise<ScanRes
       const { html, blocked } = await fetchHtml(launchUrl)
 
       if (blocked) {
-        // Server refused or network failed — we cannot verify the page is safe
-        threats.push({
-          type:        'UNVERIFIABLE',
-          description: 'Could not verify site integrity — the page was inaccessible or returned an error response.',
-        })
-        logger.warn({ appId, launchUrl }, '[sentinel] Fetch blocked — marking unverifiable')
+        // Site refused our request — mark Protected rather than treating as a threat.
+        // We can't verify it's safe, but we also can't call it malicious.
+        protected_ = true
+        logger.warn({ appId, launchUrl }, '[sentinel] Fetch blocked — marking Protected')
       } else if (html) {
+        // Extract page metadata before running threat checks
+        meta = extractMetadata(html, launchUrl)
+
         threats.push(...detectCCSkimming(html))
         threats.push(...detectCredentialTheft(html))
         threats.push(...detectMaliciousObfuscation(html))
@@ -425,20 +475,23 @@ export async function scanApp(appId: string, launchUrl: string): Promise<ScanRes
   }
 
   const malicious = threats.length > 0
+  const status:   ScanStatus = malicious ? 'Malicious' : protected_ ? 'Protected' : 'Clean'
   const decision  = malicious ? 'AUTO_REJECTED' : 'AUTO_PUBLISHED'
   const score     = malicious ? 0 : 100
 
-  logger.info({ appId, malicious, threats: threats.map(t => t.type) }, '[sentinel] Scan complete')
+  logger.info({ appId, status, threats: threats.map(t => t.type) }, '[sentinel] Scan complete')
 
   const phase2Snapshot: Prisma.InputJsonValue = {
     fetched:           !!launchUrl,
     contentLength:     0,
+    status,
+    meta:              meta as unknown as Prisma.InputJsonValue,
     xss: {
       cookieTheftDetected:  threats.some(t => t.type === 'COOKIE_THEFT'),
       storageTheftDetected: threats.some(t => t.type === 'STORAGE_EXFILTRATION'),
     },
     obfuscatedContent: threats.some(t => t.type === 'MALICIOUS_OBFUSCATION'),
-    unverifiable:      threats.some(t => t.type === 'UNVERIFIABLE'),
+    protected:         protected_,
     knownSignature:    threats.some(t => t.type === 'KNOWN_MALWARE_SIGNATURE'),
     payment: {
       ccSkimmingDetected:  threats.some(t => t.type === 'CC_SKIMMING' || t.type === 'RAW_CARD_FIELD'),
@@ -475,7 +528,9 @@ export async function scanApp(appId: string, launchUrl: string): Promise<ScanRes
     appId,
     url:       launchUrl,
     scannedAt: new Date().toISOString(),
+    status,
     malicious,
     threats,
+    meta,
   }
 }
