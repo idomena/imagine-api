@@ -81,9 +81,8 @@ export const appsRepository = {
     return db.app.create({
       data: {
         creatorId,
-        description:  '',
-        status:       AppStatus.SUBMITTED,   // enters review queue immediately
-        submittedAt:  new Date(),
+        description: '',
+        status:      AppStatus.DRAFT,   // starts as DRAFT; submit route drives DRAFT → SUBMITTED → PUBLISHED
         ...data,
       },
     })

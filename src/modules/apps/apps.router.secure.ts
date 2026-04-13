@@ -188,10 +188,13 @@ export async function appsRouter(app: FastifyInstance) {
     },
   )
 
-  // ── Creator: submit — Pass-by-Default ────────────────────────────────────
-  // App is published immediately. Security scan runs in the background.
-  // If the scan finds a definite malicious script, it silently reverts the app
-  // to SUBMITTED and writes a security flag to the Admin log.
+  // ── Creator: submit — Scan-then-Publish ─────────────────────────────────
+  // Synchronous flow:
+  //   1. DRAFT → SUBMITTED  (appsService.submit — validates ownership + state machine)
+  //   2. await scanApp()    (5 s timeout, Chrome UA, checks XSS / obfuscation / phishing)
+  //   3a. SAFE     → SUBMITTED → PUBLISHED  (appsService.adminApprove)
+  //   3b. MALICIOUS → stay SUBMITTED, return 422 with threat details
+  //   3c. scan error/timeout → fail-safe: treat as SAFE, publish
 
   app.post(
     '/:id/submit',
@@ -201,15 +204,50 @@ export async function appsRouter(app: FastifyInstance) {
     },
     async (request, reply) => {
       const creator = await appsService.resolveCreator(request.user.sub)
-      const { id } = request.params as { id: string }
-      const appData = await appsService.get(id)
+      const { id }  = request.params as { id: string }
 
-      // Publish immediately — DRAFT → SUBMITTED → PUBLISHED
-      await appsService.submit(id, creator.id)
+      // Step 1 — DRAFT → SUBMITTED (state machine validates ownership + transition)
+      const submitted = await appsService.submit(id, creator.id)
+
+      // Step 2 — synchronous security scan
+      let malicious     = false
+      let threatDetails: string[] = []
+
+      try {
+        const result = await scanApp(id, submitted.launchUrl ?? '')
+        if (result.malicious) {
+          malicious     = true
+          threatDetails = result.threats.map(t => t.description)
+          void securityLogger.threatDetected(request, id,
+            result.threats.map(t => ({ uri: submitted.launchUrl ?? '', types: [t.type] }))
+          )
+        }
+      } catch (err) {
+        // Scan error / timeout → cannot prove malicious → publish (fail-safe)
+        logger.error({ err, id }, '[sentinel] Scan error — fail-safe: publishing anyway')
+        malicious = false
+      }
+
+      // Step 3a — malicious: hold in SUBMITTED, surface to creator as 422
+      if (malicious) {
+        void securityLogger.adminAction(request, 'app_security_held', 'App', id, {
+          reason:  'Malicious content detected at submission',
+          threats: threatDetails,
+        })
+        return reply.status(422).send({
+          success: false,
+          error: {
+            message: 'App rejected by security scan.',
+            details: threatDetails,
+          },
+        })
+      }
+
+      // Step 3b — clean (or unreachable): SUBMITTED → PUBLISHED via service layer
       const published = await appsService.adminApprove(id)
-
-      // Fire background scan — never awaited, never blocks the creator
-      void runBackgroundScan(id, appData.launchUrl ?? '', request)
+      void securityLogger.adminAction(request, 'app_auto_published', 'App', id, {
+        reason: 'Sentinel scan passed — auto-published',
+      })
 
       return reply.send({ success: true, autoPublished: true, data: published })
     },
