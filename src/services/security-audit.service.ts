@@ -309,8 +309,24 @@ const KNOWN_MALWARE_URL_PATTERNS: Array<{ pattern: string; label: string }> = [
   { pattern: 'malicious-test', label: 'Known malware test endpoint' },
 ]
 
+/**
+ * Known adult-platform hostnames — checked against the URL domain before fetch.
+ * Matching any of these is an instant ADULT_CONTENT flag; no threshold needed
+ * because these are brand names with no legitimate non-adult purpose.
+ */
+const ADULT_PLATFORM_HOSTNAMES = [
+  'pornhub', 'xvideos', 'xhamster', 'xnxx', 'xnn',
+  'brazzers', 'bangbros', 'realitykings', 'naughtyamerica',
+  'mofos', 'fakehub', 'teamskeet', 'digitalplayground',
+  'blacked', 'tushy', 'vixen',
+  'xtube', 'youporn', 'redtube', 'tube8', 'spankbang', 'eporner',
+  'chaturbate', 'stripchat', 'myfreecams', 'cam4', 'bongacams',
+  'adultempire', 'adultime', 'nubiles',
+]
+
 function checkUrlSignatures(url: string): ThreatEntry[] {
   const lower = url.toLowerCase()
+
   for (const { pattern, label } of KNOWN_MALWARE_URL_PATTERNS) {
     if (lower.includes(pattern)) {
       return [{
@@ -319,6 +335,89 @@ function checkUrlSignatures(url: string): ThreatEntry[] {
       }]
     }
   }
+
+  // Adult platform hostname check — instant block, no content fetch needed
+  try {
+    const hostname = new URL(url).hostname.toLowerCase()
+    for (const platform of ADULT_PLATFORM_HOSTNAMES) {
+      if (hostname === platform || hostname.endsWith(`.${platform}`) || hostname.includes(platform)) {
+        return [{
+          type:        'ADULT_CONTENT',
+          description: 'Content Violation — Adult content is not allowed on Imagine.',
+        }]
+      }
+    }
+  } catch { /* malformed URL — skip */ }
+
+  return []
+}
+
+// ─── Check 6 — Adult Content Detection ───────────────────────────────────────
+
+/**
+ * Detects hardcore adult / pornographic content in fetched HTML.
+ *
+ * Design:
+ *  - Terms are high-specificity industry jargon — NOT generic words (adult, sex,
+ *    nude, sensual) that appear on dating sites, health platforms, or art sites.
+ *  - A hit-count threshold (≥ ADULT_HIT_THRESHOLD unique terms) is required before
+ *    flagging. This prevents single-word false positives on lifestyle content.
+ *  - Searches meta tags + visible text (scripts and styles stripped first).
+ *
+ * Deliberately NOT flagged by this check alone:
+ *  - Dating sites (romantic / relationship language, no explicit jargon)
+ *  - Health/anatomy sites (clinical terms differ from industry jargon)
+ *  - Art / photography sites (nudity ≠ pornography)
+ */
+
+// Each term is a substring that must appear in the lowercased page text.
+// Chosen to be specific to the adult content industry with minimal overlap
+// with legitimate content categories.
+const ADULT_RESTRICTED_TERMS: string[] = [
+  // Explicit act descriptors used as content labels (not anatomical/medical)
+  'gangbang', 'creampie', 'deepthroat', 'cumshot', 'bukak', 'gokkun',
+  'felch', 'squirting orgasm', 'double penetration',
+  // Platform-style content labels (multi-word — far more specific)
+  'free porn', 'watch porn', 'porn video', 'porn tube', 'sex tube',
+  'hardcore porn', 'amateur porn', 'teen porn', 'milf porn',
+  'anal porn', 'hentai porn', 'xxx video', 'xxx site', 'xxx content',
+  'pornographic video', 'pornographic content',
+  // Live-streaming adult jargon
+  'sex cam', 'sex webcam', 'adult webcam', 'cam girl show', 'live nude',
+  // Creator-economy adult terms
+  'onlyfans model', 'only fans model', 'fansly model',
+  // Classification strings sites put in their own metadata
+  'adult entertainment site', 'adult content site', 'explicit content',
+]
+
+const ADULT_HIT_THRESHOLD = 3   // ≥ 3 unique hits → flag
+
+function detectAdultContent(html: string): ThreatEntry[] {
+  // Build a single lowercased string from meta content + visible text.
+  // Strip <style> and <script> blocks first to avoid false matches in code.
+  const metaContent = [
+    ...[...html.matchAll(/<meta[^>]+content\s*=\s*["']([^"']+)["'][^>]*>/gi)].map(m => m[1] ?? ''),
+    ...[...html.matchAll(/<title[^>]*>([^<]+)<\/title>/gi)].map(m => m[1] ?? ''),
+  ].join(' ')
+
+  const visibleText = html
+    .replace(/<style[^>]*>[\s\S]*?<\/style>/gi, ' ')
+    .replace(/<script[^>]*>[\s\S]*?<\/script>/gi, ' ')
+    .replace(/<[^>]+>/g, ' ')
+    .replace(/\s+/g, ' ')
+
+  const searchable = `${metaContent} ${visibleText}`.toLowerCase()
+
+  const hits = ADULT_RESTRICTED_TERMS.filter(term => searchable.includes(term))
+
+  if (hits.length >= ADULT_HIT_THRESHOLD) {
+    logger.warn({ hitCount: hits.length, hits }, '[sentinel] Adult content detected')
+    return [{
+      type:        'ADULT_CONTENT',
+      description: 'Content Violation — Adult content is not allowed on Imagine.',
+    }]
+  }
+
   return []
 }
 
@@ -532,6 +631,7 @@ export async function scanApp(appId: string, launchUrl: string): Promise<ScanRes
         // Extract page metadata before running threat checks
         meta = extractMetadata(html, launchUrl)
 
+        threats.push(...detectAdultContent(html))
         threats.push(...detectCCSkimming(html))
         threats.push(...detectCredentialTheft(html))
         threats.push(...detectMaliciousObfuscation(html))
@@ -590,6 +690,7 @@ export async function scanApp(appId: string, launchUrl: string): Promise<ScanRes
     obfuscatedContent: threats.some(t => t.type === 'MALICIOUS_OBFUSCATION'),
     protected:         protected_,
     knownSignature:    threats.some(t => t.type === 'KNOWN_MALWARE_SIGNATURE'),
+    adultContent:      threats.some(t => t.type === 'ADULT_CONTENT'),
     payment: {
       ccSkimmingDetected:  threats.some(t => t.type === 'CC_SKIMMING' || t.type === 'RAW_CARD_FIELD'),
       trustedGatewayDetected: false,
