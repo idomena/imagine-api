@@ -85,6 +85,7 @@ function extractInlineScripts(html: string): string {
 function hasExfiltrationToUntrustedDomain(scripts: string): boolean {
   // Explicit fetch("https://...") — check the target domain
   for (const [, url] of scripts.matchAll(/fetch\s*\(\s*["'`](https?:\/\/[^"'`\s)]+)/gi)) {
+    if (!url) continue
     try {
       if (!isTrustedPaymentDomain(new URL(url).hostname)) return true
     } catch { return true }
@@ -117,10 +118,10 @@ function detectCCSkimming(html: string): ThreatEntry[] {
   // If a trusted payment SDK or hosted iframe is present, the fields are secure
   const hasTrustedSDK = (() => {
     for (const [, src] of html.matchAll(/<script[^>]+\bsrc\s*=\s*["']([^"']+)["'][^>]*>/gi)) {
-      try { if (isTrustedPaymentDomain(new URL(src).hostname)) return true } catch {}
+      try { if (src && isTrustedPaymentDomain(new URL(src).hostname)) return true } catch {}
     }
     for (const [, src] of html.matchAll(/<iframe[^>]+\bsrc\s*=\s*["']([^"']+)["'][^>]*>/gi)) {
-      try { if (isTrustedPaymentDomain(new URL(src).hostname)) return true } catch {}
+      try { if (src && isTrustedPaymentDomain(new URL(src).hostname)) return true } catch {}
     }
     return false
   })()
@@ -268,7 +269,7 @@ function detectRawBodyThreats(html: string, pageUrl: string): ThreatEntry[] {
   if (hasCardField) {
     const hasTrustedSDK = (() => {
       for (const [, src] of html.matchAll(/<script[^>]+\bsrc\s*=\s*["']([^"']+)["'][^>]*>/gi)) {
-        try { if (isTrustedPaymentDomain(new URL(src).hostname)) return true } catch {}
+        try { if (src && isTrustedPaymentDomain(new URL(src).hostname)) return true } catch {}
       }
       return false
     })()
