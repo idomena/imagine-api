@@ -385,12 +385,12 @@ const ADULT_RESTRICTED_TERMS: string[] = [
   // Live-streaming adult jargon
   'sex cam', 'sex webcam', 'adult webcam', 'cam girl show', 'live nude',
   // Creator-economy adult terms
-  'onlyfans model', 'only fans model', 'fansly model', 'onlyfans', 'leaked', 'pornstars', 'thots', 'sex video',
+  'onlyfans model', 'only fans model', 'fansly model', 'onlyfans', 'leaked', 'pornstars', 'thots',
   // Classification strings sites put in their own metadata
   'adult entertainment site', 'adult content site', 'explicit content',
 ]
 
-const ADULT_HIT_THRESHOLD = 1   // ≥ 1 unique hits → flag
+const ADULT_HIT_THRESHOLD = 2   // ≥ 2 unique hits → flag (prevents false positives)
 
 function detectAdultContent(html: string): ThreatEntry[] {
   // Build a single lowercased string from meta content + visible text.
