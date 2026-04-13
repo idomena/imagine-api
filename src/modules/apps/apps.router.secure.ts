@@ -229,15 +229,23 @@ export async function appsRouter(app: FastifyInstance) {
         malicious = false
       }
 
-      const now = new Date()
+      const now   = new Date()
+      const appId = existing.id   // same as route :id param — explicit for clarity
+
+      console.log('--- SENTINEL DEBUG START ---')
+      console.log('Route param id     :', id)
+      console.log('Targeting App ID   :', appId)
+      console.log('Existing status    :', existing.status)
+      console.log('Malicious          :', malicious)
 
       if (malicious) {
-        // Hold in SUBMITTED for manual review
-        await db.app.update({
-          where: { id },
+        const heldApp = await db.app.update({
+          where: { id: appId },
           data:  { status: AppStatus.SUBMITTED, submittedAt: now },
         })
-        void securityLogger.adminAction(request, 'app_security_held', 'App', id, {
+        console.log('DB Update Result Status (HELD):', heldApp.status)
+        console.log('--- SENTINEL DEBUG END ---')
+        void securityLogger.adminAction(request, 'app_security_held', 'App', appId, {
           reason: 'Malicious content detected at submission', threats: threatDetails,
         })
         return reply.status(422).send({
@@ -247,20 +255,32 @@ export async function appsRouter(app: FastifyInstance) {
       }
 
       // Clean — publish directly in one atomic write
-      const published = await db.app.update({
-        where: { id },
-        data: {
-          status:      AppStatus.PUBLISHED,
-          submittedAt: now,
-          approvedAt:  now,
-          publishedAt: now,
-        },
-      })
-      void securityLogger.adminAction(request, 'app_auto_published', 'App', id, {
+      let updatedApp
+      try {
+        updatedApp = await db.app.update({
+          where: { id: appId },
+          data: {
+            status:      AppStatus.PUBLISHED,
+            submittedAt: now,
+            approvedAt:  now,
+            publishedAt: now,
+          },
+        })
+        console.log('DB Update Result Status:', updatedApp.status)
+        console.log('DB Update publishedAt  :', updatedApp.publishedAt)
+      } catch (dbErr) {
+        console.log('DB UPDATE THREW ERROR  :', dbErr)
+        console.log('--- SENTINEL DEBUG END ---')
+        throw dbErr
+      }
+
+      console.log('--- SENTINEL DEBUG END ---')
+
+      void securityLogger.adminAction(request, 'app_auto_published', 'App', appId, {
         reason: 'Sentinel scan passed — auto-published',
       })
 
-      return reply.send({ success: true, autoPublished: true, data: published })
+      return reply.send({ success: true, autoPublished: true, data: updatedApp })
     },
   )
 
