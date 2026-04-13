@@ -35,13 +35,14 @@ export interface ThreatEntry {
 export type ScanStatus = 'Clean' | 'Malicious' | 'Protected'
 
 export interface ScanResult {
-  appId:     string
-  url:       string
-  scannedAt: string
-  status:    ScanStatus
-  malicious: boolean          // kept for backward-compat — true iff status === 'Malicious'
-  threats:   ThreatEntry[]
-  meta:      SiteMeta | null
+  appId:                 string
+  url:                   string
+  scannedAt:             string
+  status:                ScanStatus
+  malicious:             boolean          // kept for backward-compat — true iff status === 'Malicious'
+  threats:               ThreatEntry[]
+  meta:                  SiteMeta | null
+  suggestedCategoryName: string | null
 }
 
 // ─── Payment Processor Whitelist ──────────────────────────────────────────────
@@ -321,6 +322,74 @@ function checkUrlSignatures(url: string): ThreatEntry[] {
   return []
 }
 
+// ─── Auto-Category Detection ─────────────────────────────────────────────────
+
+/**
+ * Ordered keyword → category-name rules.
+ * The first matching rule wins. Category names must match the `name` column in
+ * the Category table exactly (case-insensitive lookup is done at call site).
+ */
+const CATEGORY_RULES: Array<{ keywords: string[]; name: string }> = [
+  {
+    keywords: ['fitness', 'nutrition', 'workout', 'gym', 'exercise', 'yoga', 'diet',
+               'calories', 'running', 'sport', 'training', 'health', 'wellness'],
+    name: 'Sports & Health',
+  },
+  {
+    keywords: ['ai', 'chat', 'gpt', 'llm', 'assistant', 'productivity', 'notes',
+               'task', 'todo', 'workflow', 'automation', 'copilot', 'summarize'],
+    name: 'Productivity',
+  },
+  {
+    keywords: ['code', 'developer', 'api', 'github', 'programming', 'debug',
+               'deploy', 'devops', 'cli', 'sdk', 'repository', 'coding'],
+    name: 'Developer Tools',
+  },
+  {
+    keywords: ['finance', 'budget', 'money', 'invest', 'crypto', 'payment',
+               'invoice', 'accounting', 'expense', 'trading', 'bank'],
+    name: 'Finance',
+  },
+  {
+    keywords: ['game', 'gaming', 'play', 'puzzle', 'quiz', 'fun', 'entertainment',
+               'stream', 'music', 'video', 'movie'],
+    name: 'Entertainment',
+  },
+  {
+    keywords: ['education', 'learn', 'course', 'study', 'tutor', 'school',
+               'lesson', 'quiz', 'exam', 'language', 'math'],
+    name: 'Education',
+  },
+  {
+    keywords: ['design', 'image', 'photo', 'art', 'creative', 'canvas',
+               'editor', 'drawing', 'illustration', 'ui', 'mockup'],
+    name: 'Design & Creative',
+  },
+  {
+    keywords: ['social', 'community', 'forum', 'network', 'friend', 'message',
+               'connect', 'team', 'collaboration', 'slack', 'discord'],
+    name: 'Social',
+  },
+  {
+    keywords: ['analytics', 'data', 'dashboard', 'metrics', 'report',
+               'insight', 'chart', 'stats', 'tracking', 'monitor'],
+    name: 'Analytics',
+  },
+  {
+    keywords: ['security', 'privacy', 'vpn', 'protection', 'safe',
+               'scanner', 'firewall', 'threat', 'password', 'encrypt'],
+    name: 'Security',
+  },
+]
+
+export function suggestCategoryName(text: string): string | null {
+  const lower = text.toLowerCase()
+  for (const { keywords, name } of CATEGORY_RULES) {
+    if (keywords.some(kw => lower.includes(kw))) return name
+  }
+  return null
+}
+
 // ─── Metadata Extraction ──────────────────────────────────────────────────────
 
 export interface SiteMeta {
@@ -479,13 +548,41 @@ export async function scanApp(appId: string, launchUrl: string): Promise<ScanRes
   const decision  = malicious ? 'AUTO_REJECTED' : 'AUTO_PUBLISHED'
   const score     = malicious ? 0 : 100
 
+  // ── Auto-category detection ──────────────────────────────────────────────
+  const metaText             = `${meta?.title ?? ''} ${meta?.description ?? ''}`
+  const suggestedCategoryName = suggestCategoryName(metaText)
+  let   suggestedCategoryId: string | undefined
+
+  if (suggestedCategoryName) {
+    try {
+      const found = await db.category.findFirst({
+        where: { name: { equals: suggestedCategoryName, mode: 'insensitive' } },
+        select: { id: true },
+      })
+      if (found) {
+        suggestedCategoryId = found.id
+        // Patch the app's categoryId — only if not already set
+        await db.app.updateMany({
+          where: { id: appId, categoryId: null },
+          data:  { categoryId: found.id },
+        })
+        logger.info({ appId, suggestedCategoryName, categoryId: found.id }, '[sentinel] Auto-category applied')
+      }
+    } catch (err) {
+      // Non-fatal — category enrichment failing must never block publish
+      logger.warn({ err, appId }, '[sentinel] Auto-category lookup failed')
+    }
+  }
+
   logger.info({ appId, status, threats: threats.map(t => t.type) }, '[sentinel] Scan complete')
 
   const phase2Snapshot: Prisma.InputJsonValue = {
-    fetched:           !!launchUrl,
-    contentLength:     0,
+    fetched:               !!launchUrl,
+    contentLength:         0,
     status,
-    meta:              meta as unknown as Prisma.InputJsonValue,
+    meta:                  meta as unknown as Prisma.InputJsonValue,
+    suggestedCategoryName: suggestedCategoryName ?? null,
+    suggestedCategoryId:   suggestedCategoryId ?? null,
     xss: {
       cookieTheftDetected:  threats.some(t => t.type === 'COOKIE_THEFT'),
       storageTheftDetected: threats.some(t => t.type === 'STORAGE_EXFILTRATION'),
@@ -526,11 +623,12 @@ export async function scanApp(appId: string, launchUrl: string): Promise<ScanRes
 
   return {
     appId,
-    url:       launchUrl,
-    scannedAt: new Date().toISOString(),
+    url:                   launchUrl,
+    scannedAt:             new Date().toISOString(),
     status,
     malicious,
     threats,
     meta,
+    suggestedCategoryName: suggestedCategoryName ?? null,
   }
 }
