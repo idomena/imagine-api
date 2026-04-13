@@ -1,10 +1,11 @@
 import { createHash } from 'crypto'
 import type { FastifyInstance } from 'fastify'
-import { UserRole } from '@prisma/client'
+import { AppStatus, UserRole } from '@prisma/client'
 import { appsService } from './apps.service'
 import { appsRepository } from './apps.repository'
 import { launchEventsRepository } from '../launch-events/launch-events.repository'
 import { scanApp } from '../../services/security-audit.service'
+import { db } from '../../core/db'
 import {
   CreateAppBodySchema,
   ListAppsQuerySchema,
@@ -169,29 +170,34 @@ export async function appsRouter(app: FastifyInstance) {
     '/:id/submit',
     { preHandler: [app.requireRole([UserRole.CREATOR])] },
     async (request, reply) => {
-      const creator = await appsService.resolveCreator(request.user.sub)
-      const { id }  = request.params as { id: string }
+      const creator  = await appsService.resolveCreator(request.user.sub)
+      const { id }   = request.params as { id: string }
 
-      // 1. Transition DRAFT → SUBMITTED (validates ownership + state machine)
-      const submitted = await appsService.submit(id, creator.id)
+      // Fetch app and verify ownership.
+      // NOTE: apps are created directly as SUBMITTED by the repository, so we
+      // must NOT call appsService.submit() here — that asserts DRAFT→SUBMITTED
+      // which would throw a 422 (SUBMITTED→SUBMITTED is not in the state machine).
+      const existing = await appsService.get(id)
+      if (existing.creatorId !== creator.id) {
+        return reply.status(403).send({ success: false, error: { message: 'Forbidden' } })
+      }
 
-      // 2. Synchronous security scan — 5 s timeout baked into the service.
-      //    Fail-safe: any fetch failure or thrown error defaults to PUBLISHED.
-      let malicious = false
+      // Run security scan synchronously — 5 s timeout inside the service.
+      // Fail-safe: any error defaults to clean (publish).
+      let malicious     = false
       let threatDetails: string[] = []
 
       try {
-        const result = await scanApp(id, submitted.launchUrl ?? '')
+        const result = await scanApp(id, existing.launchUrl ?? '')
         if (result.malicious) {
           malicious     = true
           threatDetails = result.threats.map(t => t.description)
         }
       } catch {
-        // Scan error → cannot prove malicious → publish (fail-safe)
         malicious = false
       }
 
-      // 3a. Malicious — keep as SUBMITTED and reject with 422
+      // Malicious — leave in SUBMITTED for manual review, return 422
       if (malicious) {
         return reply.status(422).send({
           success: false,
@@ -202,8 +208,19 @@ export async function appsRouter(app: FastifyInstance) {
         })
       }
 
-      // 3b. Clean (or scan failed) — auto-publish immediately
-      const published = await appsService.adminApprove(id)
+      // Clean (or scan unreachable) — publish directly via Prisma.
+      // Bypasses the state machine intentionally: the app is already SUBMITTED
+      // from creation, so we write the final PUBLISHED state in one step.
+      const published = await db.app.update({
+        where: { id },
+        data: {
+          status:      AppStatus.PUBLISHED,
+          submittedAt: existing.submittedAt ?? new Date(),
+          approvedAt:  new Date(),
+          publishedAt: new Date(),
+        },
+      })
+
       return reply.send({ success: true, autoPublished: true, data: published })
     },
   )
