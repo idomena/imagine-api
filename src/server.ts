@@ -41,6 +41,22 @@ async function start() {
     process.exit(1)
   }
 
+  // ── One-time cleanup: purge apps previously flagged with ADULT_CONTENT ───
+  // Runs on every startup but is a no-op once all affected rows are gone.
+  try {
+    const flagged = await db.securityAuditReport.findMany({
+      where:  { threats: { string_contains: 'ADULT_CONTENT' } },
+      select: { appId: true },
+    })
+    if (flagged.length > 0) {
+      const ids = flagged.map(r => r.appId)
+      const { count } = await db.app.deleteMany({ where: { id: { in: ids } } })
+      logger.info({ count, ids }, '[cleanup] Purged adult-content flagged apps from database')
+    }
+  } catch (err) {
+    logger.warn({ err }, '[cleanup] Adult content purge failed — non-fatal, continuing startup')
+  }
+
   const app = await buildApp()
 
   // ── Background workers (require Redis) ───────────────────────────────────

@@ -213,14 +213,16 @@ export async function appsRouter(app: FastifyInstance) {
       }
 
       // Security scan — synchronous, 5 s timeout inside the service
-      let malicious     = false
+      let malicious      = false
+      let isAdultContent = false
       let threatDetails: string[] = []
 
       try {
         const result = await scanApp(id, existing.launchUrl ?? '')
         if (result.malicious) {
-          malicious     = true
-          threatDetails = result.threats.map(t => t.description)
+          malicious      = true
+          isAdultContent = result.threats.some(t => t.type === 'ADULT_CONTENT')
+          threatDetails  = result.threats.map(t => t.description)
           void securityLogger.threatDetected(request, id,
             result.threats.map(t => ({ uri: existing.launchUrl ?? '', types: [t.type] }))
           )
@@ -234,6 +236,26 @@ export async function appsRouter(app: FastifyInstance) {
       const appId = existing.id
 
       if (malicious) {
+        if (isAdultContent) {
+          // Hard block — delete the app entirely so it never appears in the DB
+          try {
+            await db.app.delete({ where: { id: appId } })
+          } catch (delErr) {
+            logger.error({ err: delErr, appId }, '[sentinel] Adult content: app deletion failed')
+          }
+          void securityLogger.adminAction(request, 'app_adult_content_blocked', 'App', appId, {
+            reason: 'Adult content detected — app permanently deleted',
+          })
+          return reply.code(422).send({
+            success: false,
+            error: {
+              message: 'Content Violation — Adult content is not allowed on Imagine.',
+              details: ['Content Violation — Adult content is not allowed on Imagine.'],
+            },
+          })
+        }
+
+        // Non-adult malicious content — hold for manual moderator review
         await db.app.update({
           where: { id: appId },
           data:  { status: AppStatus.SUBMITTED, submittedAt: now },
