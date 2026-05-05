@@ -88,7 +88,7 @@ export async function buildApp() {
   // CORS_ORIGIN can be:
   //   unset / "*"  → allow any origin
   //   "https://a.com,https://b.com" → comma-separated whitelist
-  // Railway *.up.railway.app and Vercel *.vercel.app are always allowed.
+  // Railway *.up.railway.app, Vercel *.vercel.app, and imaginehq.services are always allowed.
   const rawOrigin = process.env.CORS_ORIGIN
 
   const corsOrigin =
@@ -99,6 +99,8 @@ export async function buildApp() {
           const alwaysAllowed = (o: string) =>
             o.endsWith('.up.railway.app') ||
             o.endsWith('.vercel.app') ||
+            o === 'https://imaginehq.services' ||
+            o === 'https://www.imaginehq.services' ||
             o === 'http://localhost:3001' ||
             o === 'http://localhost:3000'
           if (!origin || allowed.includes(origin) || alwaysAllowed(origin)) {
