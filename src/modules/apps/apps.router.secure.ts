@@ -16,6 +16,7 @@ import { scanApp } from '../../services/security-audit.service'
 import { securityLogger } from '../../services/security-logger.service'
 import { logger } from '../../core/logger'
 import { SUBMIT_RATE_LIMIT } from '../../plugins/rate-limit.plugin'
+import { BadRequestError } from '../../core/errors'
 
 // ---------------------------------------------------------------------------
 // Apps router — SECURED VERSION
@@ -31,7 +32,7 @@ import { SUBMIT_RATE_LIMIT } from '../../plugins/rate-limit.plugin'
 /** Reject plaintext HTTP launch URLs — creators must use HTTPS */
 function assertHttps(url: string | undefined | null, field: string): void {
   if (url && url.startsWith('http://')) {
-    throw new Error(`${field} must use HTTPS`)
+    throw new BadRequestError(`${field} must use HTTPS`)
   }
 }
 
