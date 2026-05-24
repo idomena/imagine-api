@@ -106,12 +106,10 @@ export const appsService = {
       throw new ForbiddenError('Not authenticated — user ID is missing from token')
     }
     const creator = await appsRepository.findCreatorByUserId(userId)
-    if (!creator) {
-      throw new ForbiddenError(
-        'Creator profile not found. Please sign out and sign back in to complete your account setup.',
-      )
-    }
-    return creator
+    if (creator) return creator
+    // Auto-provision a Creator record (handles ADMIN/MODERATOR users)
+    const { db } = await import('../../core/db')
+    return db.creator.create({ data: { userId } })
   },
 
   async create(creatorId: string, body: CreateAppBody) {

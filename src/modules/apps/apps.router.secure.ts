@@ -249,7 +249,7 @@ export async function appsRouter(app: FastifyInstance) {
 
   app.post(
     '/',
-    { preHandler: [app.requireRole([UserRole.CREATOR])] },
+    { preHandler: [app.requireRole([UserRole.CREATOR, UserRole.MODERATOR, UserRole.ADMIN])] },
     async (request, reply) => {
       const creator = await appsService.resolveCreator(request.user.sub)
       const body = CreateAppBodySchema.parse(request.body)
@@ -265,7 +265,7 @@ export async function appsRouter(app: FastifyInstance) {
 
   app.patch(
     '/:id',
-    { preHandler: [app.requireRole([UserRole.CREATOR])] },
+    { preHandler: [app.requireRole([UserRole.CREATOR, UserRole.MODERATOR, UserRole.ADMIN])] },
     async (request, reply) => {
       const creator = await appsService.resolveCreator(request.user.sub)
       const { id } = request.params as { id: string }
@@ -281,7 +281,7 @@ export async function appsRouter(app: FastifyInstance) {
 
   app.delete(
     '/:id',
-    { preHandler: [app.requireRole([UserRole.CREATOR])] },
+    { preHandler: [app.requireRole([UserRole.CREATOR, UserRole.MODERATOR, UserRole.ADMIN])] },
     async (request, reply) => {
       const creator = await appsService.resolveCreator(request.user.sub)
       const { id } = request.params as { id: string }
@@ -314,7 +314,7 @@ export async function appsRouter(app: FastifyInstance) {
   app.post(
     '/:id/submit',
     {
-      preHandler: [app.requireRole([UserRole.CREATOR])],
+      preHandler: [app.requireRole([UserRole.CREATOR, UserRole.MODERATOR, UserRole.ADMIN])],
       config:     { rateLimit: SUBMIT_RATE_LIMIT },
       schema:     { body: { type: 'object', additionalProperties: true } },
     },
