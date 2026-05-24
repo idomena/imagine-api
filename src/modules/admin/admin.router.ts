@@ -639,19 +639,18 @@ export async function adminRouter(app: FastifyInstance) {
     await db.$transaction([
       db.promotionRun.deleteMany({}),
       db.promotionJob.deleteMany({}),
-      db.analyticsEvent.deleteMany({}),
-      db.launch.deleteMany({}),
-      db.upvote.deleteMany({}),
+      db.launchEvent.deleteMany({}),
+      db.recentlyUsed.deleteMany({}),
+      db.favorite.deleteMany({}),
       db.appTag.deleteMany({}),
       db.appReview.deleteMany({}),
-      db.appSnapshot.deleteMany({}),
-      db.reviewRequest.deleteMany({}),
+      db.securityAuditReport.deleteMany({}),
+      db.moderationReview.deleteMany({}),
       db.appAsset.deleteMany({}),
       db.appVersion.deleteMany({}),
       db.app.deleteMany({}),
     ])
-    const count = await db.app.count()
     logger.warn({ ip: request.ip }, '[admin] All apps nuked')
-    return reply.send({ success: true, data: { deleted: count === 0 ? 'all' : 'partial' } })
+    return reply.send({ success: true, data: { deleted: 'all' } })
   })
 }
