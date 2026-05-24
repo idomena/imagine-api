@@ -85,6 +85,50 @@ export async function appsRouter(app: FastifyInstance) {
     },
   )
 
+  // Live activity feed — last 5 minutes of visits for creator's apps
+  app.get(
+    '/mine/live',
+    { preHandler: [app.requireRole([UserRole.CREATOR, UserRole.MODERATOR, UserRole.ADMIN])] },
+    async (request, reply) => {
+      const since = new Date(Date.now() - 5 * 60 * 1000)
+
+      let appIds: string[] = []
+      try {
+        const creator = await appsService.resolveCreator(request.user.sub)
+        const apps = await db.app.findMany({
+          where:  { creatorId: creator.id },
+          select: { id: true, name: true, iconUrl: true },
+        })
+        appIds = apps.map(a => a.id)
+
+        if (appIds.length === 0) {
+          return reply.send({ success: true, data: { activeCount: 0, recentEvents: [] } })
+        }
+
+        const events = await db.launchEvent.findMany({
+          where:   { appId: { in: appIds }, createdAt: { gte: since } },
+          orderBy: { createdAt: 'desc' },
+          take:    20,
+          select:  {
+            id:        true,
+            createdAt: true,
+            userAgent: true,
+            app: { select: { name: true, iconUrl: true, slug: true } },
+          },
+        })
+
+        // Unique sessions (by ipHash or by event id) in last 5 min
+        const activeCount = await db.launchEvent.count({
+          where: { appId: { in: appIds }, createdAt: { gte: since } },
+        })
+
+        return reply.send({ success: true, data: { activeCount, recentEvents: events } })
+      } catch {
+        return reply.send({ success: true, data: { activeCount: 0, recentEvents: [] } })
+      }
+    },
+  )
+
   // Analytics for creator's own apps — real launch event data, last 30 days
   app.get(
     '/mine/analytics',

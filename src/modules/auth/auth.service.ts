@@ -74,7 +74,7 @@ export const authService = {
     const { raw: refreshToken, hash: newHash } = generateRefreshToken()
     await authRepository.saveRefreshToken(user.id, newHash, getRefreshTokenExpiry())
 
-    return { accessToken, refreshToken }
+    return { accessToken, refreshToken, user: sanitizeUser(user) }
   },
 
   async googleAuth(app: FastifyInstance, body: GoogleAuthBody) {

@@ -8,13 +8,15 @@ import { UserRole } from '@prisma/client'
 export const authRepository = {
   async findByEmail(email: string) {
     return db.user.findFirst({
-      where: { email, deletedAt: null },
+      where:   { email, deletedAt: null },
+      include: { creator: { select: { displayName: true, avatarUrl: true } } },
     })
   },
 
   async findById(id: string) {
     return db.user.findFirst({
-      where: { id, deletedAt: null },
+      where:   { id, deletedAt: null },
+      include: { creator: { select: { displayName: true, avatarUrl: true } } },
     })
   },
 
@@ -47,18 +49,24 @@ export const authRepository = {
         user = await tx.user.update({
           where: { id: user.id },
           data: {
-            googleId:     data.googleId,
-            avatarUrl:    data.picture,
+            googleId:      data.googleId,
+            avatarUrl:     data.picture,
             emailVerified: true,
             role:          UserRole.CREATOR,
           },
         })
-        // Ensure Creator profile exists
+        // Ensure Creator profile exists and name/avatar are up-to-date
         const creator = await tx.creator.findUnique({ where: { userId: user.id } })
         if (!creator) {
           await tx.creator.create({ data: { userId: user.id, displayName: data.name, avatarUrl: data.picture } })
-        } else if (data.picture) {
-          await tx.creator.update({ where: { id: creator.id }, data: { avatarUrl: data.picture } })
+        } else {
+          await tx.creator.update({
+            where: { id: creator.id },
+            data: {
+              displayName: data.name,
+              ...(data.picture ? { avatarUrl: data.picture } : {}),
+            },
+          })
         }
       } else {
         // Brand-new account via Google
@@ -76,7 +84,11 @@ export const authRepository = {
         })
       }
 
-      return user
+      // Return user with creator so sanitizeUser can merge displayName
+      return tx.user.findFirstOrThrow({
+        where:   { id: user.id },
+        include: { creator: { select: { displayName: true, avatarUrl: true } } },
+      })
     })
   },
 
@@ -88,7 +100,10 @@ export const authRepository = {
       await tx.creator.create({
         data: { userId: user.id, displayName },
       })
-      return user
+      return tx.user.findFirstOrThrow({
+        where:   { id: user.id },
+        include: { creator: { select: { displayName: true, avatarUrl: true } } },
+      })
     })
   },
 
@@ -105,8 +120,8 @@ export const authRepository = {
    */
   async findRefreshToken(tokenHash: string) {
     return db.refreshToken.findUnique({
-      where: { tokenHash },
-      include: { user: true },
+      where:   { tokenHash },
+      include: { user: { include: { creator: { select: { displayName: true, avatarUrl: true } } } } },
     })
   },
 
