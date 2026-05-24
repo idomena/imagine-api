@@ -635,8 +635,23 @@ export async function adminRouter(app: FastifyInstance) {
     if (token !== 'imagine-nuke-2026') {
       return reply.status(401).send({ success: false, error: { message: 'Forbidden' } })
     }
-    const { count } = await db.app.deleteMany({})
-    logger.warn({ count, ip: request.ip }, '[admin] All apps nuked')
-    return reply.send({ success: true, data: { deleted: count } })
+    // Delete child tables first to avoid FK constraint errors
+    await db.$transaction([
+      db.promotionRun.deleteMany({}),
+      db.promotionJob.deleteMany({}),
+      db.analyticsEvent.deleteMany({}),
+      db.launch.deleteMany({}),
+      db.upvote.deleteMany({}),
+      db.appTag.deleteMany({}),
+      db.appReview.deleteMany({}),
+      db.appSnapshot.deleteMany({}),
+      db.reviewRequest.deleteMany({}),
+      db.appAsset.deleteMany({}),
+      db.appVersion.deleteMany({}),
+      db.app.deleteMany({}),
+    ])
+    const count = await db.app.count()
+    logger.warn({ ip: request.ip }, '[admin] All apps nuked')
+    return reply.send({ success: true, data: { deleted: count === 0 ? 'all' : 'partial' } })
   })
 }
