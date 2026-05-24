@@ -113,6 +113,24 @@ export async function appsRouter(app: FastifyInstance) {
     return reply.redirect(dest)
   })
 
+  // POST /:id/view — records a page-view event without redirecting.
+  // Called silently by the tool detail page on mount for real analytics.
+  app.post('/:id/view', async (request, reply) => {
+    const { id } = request.params as { id: string }
+
+    const ipHash = request.ip
+      ? createHash('sha256').update(request.ip).digest('hex')
+      : undefined
+
+    launchEventsRepository.create({
+      appId:     id,
+      ipHash,
+      userAgent: request.headers['user-agent'],
+    }).catch(() => {})
+
+    return reply.status(204).send()
+  })
+
   // ── Creator: CRUD ─────────────────────────────────────────────────────────
 
   app.post(
