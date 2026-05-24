@@ -628,4 +628,15 @@ export async function adminRouter(app: FastifyInstance) {
     const rows = await getSecurityLog()
     return reply.send({ success: true, data: rows })
   })
+
+  // ── TEMPORARY: Delete all apps ────────────────────────────────────────────
+  app.delete('/api/v1/admin/nuke-apps', async (request, reply) => {
+    const token = (request.headers['x-nuke-token'] as string | undefined) ?? ''
+    if (token !== 'imagine-nuke-2026') {
+      return reply.status(401).send({ success: false, error: { message: 'Forbidden' } })
+    }
+    const { count } = await db.app.deleteMany({})
+    logger.warn({ count, ip: request.ip }, '[admin] All apps nuked')
+    return reply.send({ success: true, data: { deleted: count } })
+  })
 }
