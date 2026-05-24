@@ -8,6 +8,7 @@ import {
 } from '../../core/errors'
 import { moderationQueue } from '../../core/queue'
 import { logger } from '../../core/logger'
+import { db } from '../../core/db'
 import type { CreateAppBody, RejectAppBody, RenameAppBody, UpdateAppBody } from './apps.schema'
 
 // ---------------------------------------------------------------------------
@@ -107,8 +108,7 @@ export const appsService = {
     }
     const creator = await appsRepository.findCreatorByUserId(userId)
     if (creator) return creator
-    // Auto-provision a Creator record (handles ADMIN/MODERATOR users)
-    const { db } = await import('../../core/db')
+    // Auto-provision a Creator record (handles ADMIN/MODERATOR users who registered before this was automatic)
     return db.creator.create({ data: { userId } })
   },
 
