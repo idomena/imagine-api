@@ -1,6 +1,7 @@
 import { createHash } from 'crypto'
 import type { FastifyInstance } from 'fastify'
 import { AppStatus, UserRole } from '@prisma/client'
+import { Prisma } from '@prisma/client'
 import { appsService } from './apps.service'
 import { appsRepository } from './apps.repository'
 import { launchEventsRepository } from '../launch-events/launch-events.repository'
@@ -81,6 +82,61 @@ export async function appsRouter(app: FastifyInstance) {
       const query = ListAppsQuerySchema.parse(request.query)
       const data = await appsService.listByCreator(creator.id, query)
       return reply.send({ success: true, data })
+    },
+  )
+
+  // Analytics for creator's own apps — real launch event data, last 30 days
+  app.get(
+    '/mine/analytics',
+    { preHandler: [app.requireRole([UserRole.CREATOR, UserRole.MODERATOR, UserRole.ADMIN])] },
+    async (request, reply) => {
+      const since = new Date()
+      since.setDate(since.getDate() - 30)
+
+      let appIds: string[] = []
+      let apps: Array<{ id: string; name: string; slug: string; iconUrl: string | null; status: string; launchUrl: string | null }> = []
+
+      try {
+        const creator = await appsService.resolveCreator(request.user.sub)
+        apps = await db.app.findMany({
+          where:  { creatorId: creator.id },
+          select: { id: true, name: true, slug: true, iconUrl: true, status: true, launchUrl: true },
+        })
+        appIds = apps.map(a => a.id)
+      } catch {
+        return reply.send({ success: true, data: { apps: [], byApp: {}, totals: {} } })
+      }
+
+      if (appIds.length === 0) {
+        return reply.send({ success: true, data: { apps, byApp: {}, totals: {} } })
+      }
+
+      type RawRow = { app_id: string; date: string; count: bigint }
+      const rows = await db.$queryRaw<RawRow[]>(
+        Prisma.sql`
+          SELECT app_id,
+                 TO_CHAR(DATE(created_at AT TIME ZONE 'UTC'), 'YYYY-MM-DD') AS date,
+                 COUNT(*)::bigint AS count
+          FROM   launch_events
+          WHERE  app_id = ANY(${appIds}::uuid[])
+            AND  created_at >= ${since}
+          GROUP  BY app_id, DATE(created_at AT TIME ZONE 'UTC')
+          ORDER  BY date ASC
+        `,
+      )
+
+      const byApp: Record<string, Array<{ date: string; views: number }>> = {}
+      for (const row of rows) {
+        if (!byApp[row.app_id]) byApp[row.app_id] = []
+        byApp[row.app_id]!.push({ date: row.date, views: Number(row.count) })
+      }
+
+      const totals: Record<string, number> = {}
+      for (const [appId, series] of Object.entries(byApp)) {
+        totals[appId] = series.reduce((sum, s) => sum + s.views, 0)
+      }
+
+      return reply.send({ success: true, data: { apps, byApp, totals, since: since.toISOString() } })
     },
   )
 
@@ -366,6 +422,24 @@ export async function appsRouter(app: FastifyInstance) {
         adminId: request.user.sub,
       })
       return reply.send({ success: true, data })
+    },
+  )
+
+  // Admin hard-delete — bypasses ownership check, any status
+  app.delete(
+    '/:id/force',
+    { preHandler: [app.requireRole([UserRole.ADMIN])] },
+    async (request, reply) => {
+      const { id } = request.params as { id: string }
+      const existing = await appsRepository.findById(id)
+      if (!existing) {
+        return reply.status(404).send({ success: false, error: { message: 'App not found' } })
+      }
+      await appsRepository.delete(id)
+      void securityLogger.adminAction(request, 'app_force_deleted', 'App', id, {
+        adminId: request.user.sub,
+      })
+      return reply.status(204).send()
     },
   )
 

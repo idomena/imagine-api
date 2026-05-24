@@ -1,6 +1,6 @@
 import crypto from 'crypto'
 import type { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify'
-import { AppStatus } from '@prisma/client'
+import { AppStatus, UserRole } from '@prisma/client'
 import { db } from '../../core/db'
 import { appsService } from '../apps/apps.service'
 import { appsRepository } from '../apps/apps.repository'
@@ -203,7 +203,33 @@ function dashboardPage(): string {
   <a href="/admin-dashboard/logout" class="logout">Sign out</a>
 </header>
 <main>
-  <section id="queue-section">
+  <section id="grant-section">
+    <div class="section-head"><h2>User Management</h2></div>
+    <div style="background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:1rem">
+      <p style="font-size:.8rem;color:var(--muted);margin-bottom:.75rem">Grant or change a user's role.</p>
+      <div style="display:flex;gap:.5rem;flex-wrap:wrap;align-items:center">
+        <input id="grant-email" type="email" placeholder="user@example.com" style="flex:1;min-width:200px;background:var(--bg);border:1px solid var(--border);border-radius:8px;padding:.5rem .75rem;color:var(--text);font-size:.875rem;outline:none">
+        <select id="grant-role" style="background:var(--bg);border:1px solid var(--border);border-radius:8px;padding:.5rem .75rem;color:var(--text);font-size:.875rem;outline:none">
+          <option value="ADMIN">ADMIN</option>
+          <option value="MODERATOR">MODERATOR</option>
+          <option value="CREATOR">CREATOR</option>
+          <option value="USER">USER</option>
+        </select>
+        <button class="btn" id="grant-btn" style="background:var(--accent);color:#fff">Set Role</button>
+      </div>
+      <div id="grant-result" style="margin-top:.625rem;font-size:.8rem;color:var(--muted)"></div>
+    </div>
+  </section>
+
+  <section id="all-apps-section" style="margin-top:2rem">
+    <div class="section-head">
+      <h2>All Apps</h2>
+      <span class="badge" id="all-apps-count">…</span>
+    </div>
+    <div id="all-apps-list"><div class="spinner-full">Loading…</div></div>
+  </section>
+
+  <section id="queue-section" style="margin-top:2rem">
     <div class="section-head">
       <h2>Review Queue</h2>
       <span class="badge" id="queue-count">…</span>
@@ -211,7 +237,7 @@ function dashboardPage(): string {
     <div id="queue-list"><div class="spinner-full">Loading…</div></div>
   </section>
 
-  <section id="log-section">
+  <section id="log-section" style="margin-top:2rem">
     <div class="section-head">
       <h2>Security Log</h2>
       <span class="badge green">last 10</span>
@@ -504,8 +530,105 @@ document.getElementById('queue-list').addEventListener('click', function(e) {
   if (btn.classList.contains('btn-delete'))  deleteApp(btn);
 });
 
+// ── All Apps ──────────────────────────────────────────────────────────────────
+
+function statusColor(s) {
+  return s === 'PUBLISHED' ? 'var(--green)'
+    : s === 'SUBMITTED' || s === 'IN_REVIEW' || s === 'APPROVED' ? 'var(--yellow)'
+    : s === 'REJECTED' || s === 'ARCHIVED' ? 'var(--red)'
+    : 'var(--muted)';
+}
+
+async function loadAllApps() {
+  var el = document.getElementById('all-apps-list');
+  try {
+    var res = await apiFetch('/api/v1/admin/apps/all');
+    if (!res) return;
+    var data = res.data || [];
+    document.getElementById('all-apps-count').textContent = data.length;
+    if (!data.length) { el.innerHTML = '<p class="empty">No apps yet.</p>'; return; }
+    el.innerHTML = data.map(function(app) {
+      var icon = app.iconUrl ? '<img src="' + esc(app.iconUrl) + '" alt="" loading="lazy">' : '📦';
+      var creator = (app.creator && app.creator.displayName) || '—';
+      var email   = (app.creator && app.creator.user && app.creator.user.email) || '';
+      var canArchive = app.status === 'PUBLISHED' || app.status === 'SUBMITTED' || app.status === 'IN_REVIEW' || app.status === 'APPROVED';
+      return '<div class="app-card" id="all-card-' + esc(app.id) + '">'
+        + '<div class="icon">' + icon + '</div>'
+        + '<div class="app-info">'
+        + '<div class="app-name">' + esc(app.name)
+        + ' <span style="font-size:.65rem;font-weight:700;padding:.1rem .4rem;border-radius:999px;color:' + statusColor(app.status) + ';border:1px solid currentColor">' + esc(app.status) + '</span></div>'
+        + '<div class="app-meta">' + esc(creator) + (email ? ' &middot; ' + esc(email) : '') + '</div>'
+        + (app.launchUrl ? '<div class="app-url">' + esc(app.launchUrl) + '</div>' : '')
+        + '</div>'
+        + '<div class="actions">'
+        + (canArchive ? '<button class="btn btn-archive-all" data-id="' + esc(app.id) + '" style="background:#1c1206;color:var(--yellow);border:1px solid #78350f">Hide</button>' : '')
+        + '<button class="btn btn-delete-all" data-id="' + esc(app.id) + '" style="background:#3b0a0a;color:var(--red);border:1px solid #7f1d1d">Delete</button>'
+        + '</div>'
+        + '</div>';
+    }).join('');
+  } catch(e) {
+    el.innerHTML = '<p class="empty">Failed: ' + esc(e.message) + '</p>';
+  }
+}
+
+document.getElementById('all-apps-list').addEventListener('click', async function(e) {
+  var btn = e.target.closest('button');
+  if (!btn) return;
+  var id = btn.dataset.id;
+  var orig = btn.textContent;
+  if (btn.classList.contains('btn-archive-all')) {
+    if (!confirm('Hide this app from public listings?')) return;
+    btn.disabled = true; btn.innerHTML = '<span class="spinner"></span>';
+    try {
+      await apiFetch('/api/v1/admin/apps/' + id + '/archive', { method: 'POST' });
+      toast('App hidden for inspection.');
+      loadAllApps();
+    } catch(e) { btn.disabled = false; btn.textContent = orig; toast(e.message, 'err'); }
+  }
+  if (btn.classList.contains('btn-delete-all')) {
+    if (!confirm('Permanently delete this app? This cannot be undone.')) return;
+    btn.disabled = true; btn.innerHTML = '<span class="spinner"></span>';
+    try {
+      await apiFetch('/api/v1/admin/apps/' + id, { method: 'DELETE' });
+      toast('App deleted.');
+      var card = document.getElementById('all-card-' + id);
+      if (card) card.remove();
+      var cnt = document.getElementById('all-apps-count');
+      cnt.textContent = Math.max(0, (parseInt(cnt.textContent, 10) || 1) - 1);
+    } catch(e) { btn.disabled = false; btn.textContent = orig; toast(e.message, 'err'); }
+  }
+});
+
+// ── Grant/Set Role ─────────────────────────────────────────────────────────────
+
+document.getElementById('grant-btn').addEventListener('click', async function() {
+  var email = document.getElementById('grant-email').value.trim();
+  var role  = document.getElementById('grant-role').value;
+  var res   = document.getElementById('grant-result');
+  if (!email) { res.textContent = 'Enter an email address.'; res.style.color = 'var(--red)'; return; }
+  this.disabled = true;
+  this.innerHTML = '<span class="spinner"></span>';
+  try {
+    var data = await apiFetch('/api/v1/admin/users/set-role', {
+      method: 'POST',
+      body: JSON.stringify({ email: email, role: role }),
+    });
+    res.style.color = 'var(--green)';
+    res.textContent = 'Done — ' + (data && data.data ? data.data.email + ' is now ' + data.data.role : 'role updated.');
+    toast('Role updated for ' + email);
+  } catch(e) {
+    res.style.color = 'var(--red)';
+    res.textContent = e.message;
+  } finally {
+    this.disabled = false;
+    this.textContent = 'Set Role';
+  }
+});
+
 refreshAll();
+loadAllApps();
 setInterval(refreshAll, 60000);
+setInterval(loadAllApps, 60000);
 `
 
 // ---------------------------------------------------------------------------
@@ -627,5 +750,90 @@ export async function adminRouter(app: FastifyInstance) {
     if (!apiAuth(request, reply)) return
     const rows = await getSecurityLog()
     return reply.send({ success: true, data: rows })
+  })
+
+  // ── API: All apps (all statuses) ──────────────────────────────────────────
+  app.get('/api/v1/admin/apps/all', async (request, reply) => {
+    if (!apiAuth(request, reply)) return
+    const apps = await db.app.findMany({
+      orderBy: { createdAt: 'desc' },
+      take: 100,
+      select: {
+        id:         true,
+        name:       true,
+        slug:       true,
+        tagline:    true,
+        status:     true,
+        launchUrl:  true,
+        iconUrl:    true,
+        createdAt:  true,
+        submittedAt: true,
+        publishedAt: true,
+        creator: {
+          select: {
+            displayName: true,
+            user: { select: { email: true } },
+          },
+        },
+      },
+    })
+    return reply.send({ success: true, data: apps })
+  })
+
+  // ── API: Archive (hide) any app ───────────────────────────────────────────
+  app.post('/api/v1/admin/apps/:id/archive', async (request, reply) => {
+    if (!apiAuth(request, reply)) return
+    const { id } = request.params as { id: string }
+    const app = await appsRepository.findById(id)
+    if (!app) return reply.status(404).send({ success: false, error: { message: 'App not found' } })
+    const updated = await db.app.update({
+      where: { id },
+      data: { status: AppStatus.ARCHIVED, archivedAt: new Date() },
+    })
+    logger.info({ appId: id, ip: request.ip }, '[admin] App archived/hidden')
+    return reply.send({ success: true, data: updated })
+  })
+
+  // ── API: Grant admin role to a user by email ──────────────────────────────
+  app.post('/api/v1/admin/users/grant-admin', async (request, reply) => {
+    if (!apiAuth(request, reply)) return
+    const body = request.body as Record<string, string> | undefined
+    const email = body?.['email']?.trim().toLowerCase()
+    if (!email) {
+      return reply.status(400).send({ success: false, error: { message: 'email is required' } })
+    }
+    const user = await db.user.findUnique({ where: { email } })
+    if (!user) {
+      return reply.status(404).send({ success: false, error: { message: `No user found with email: ${email}` } })
+    }
+    const updated = await db.user.update({
+      where: { email },
+      data:  { role: UserRole.ADMIN },
+      select: { id: true, email: true, role: true },
+    })
+    logger.warn({ email, ip: request.ip }, '[admin] User granted ADMIN role')
+    return reply.send({ success: true, data: updated })
+  })
+
+  // ── API: Set user role ────────────────────────────────────────────────────
+  app.post('/api/v1/admin/users/set-role', async (request, reply) => {
+    if (!apiAuth(request, reply)) return
+    const body = request.body as Record<string, string> | undefined
+    const email = body?.['email']?.trim().toLowerCase()
+    const role  = body?.['role'] as UserRole | undefined
+    if (!email || !role || !Object.values(UserRole).includes(role)) {
+      return reply.status(400).send({ success: false, error: { message: 'email and valid role are required' } })
+    }
+    const user = await db.user.findUnique({ where: { email } })
+    if (!user) {
+      return reply.status(404).send({ success: false, error: { message: `No user found with email: ${email}` } })
+    }
+    const updated = await db.user.update({
+      where: { email },
+      data:  { role },
+      select: { id: true, email: true, role: true },
+    })
+    logger.warn({ email, role, ip: request.ip }, '[admin] User role updated')
+    return reply.send({ success: true, data: updated })
   })
 }
