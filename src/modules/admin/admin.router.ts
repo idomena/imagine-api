@@ -628,29 +628,4 @@ export async function adminRouter(app: FastifyInstance) {
     const rows = await getSecurityLog()
     return reply.send({ success: true, data: rows })
   })
-
-  // ── TEMPORARY: Delete all apps ────────────────────────────────────────────
-  app.delete('/api/v1/admin/nuke-apps', async (request, reply) => {
-    const token = (request.headers['x-nuke-token'] as string | undefined) ?? ''
-    if (token !== 'imagine-nuke-2026') {
-      return reply.status(401).send({ success: false, error: { message: 'Forbidden' } })
-    }
-    // Delete child tables first to avoid FK constraint errors
-    await db.$transaction([
-      db.promotionRun.deleteMany({}),
-      db.promotionJob.deleteMany({}),
-      db.launchEvent.deleteMany({}),
-      db.recentlyUsed.deleteMany({}),
-      db.favorite.deleteMany({}),
-      db.appTag.deleteMany({}),
-      db.appReview.deleteMany({}),
-      db.securityAuditReport.deleteMany({}),
-      db.moderationReview.deleteMany({}),
-      db.appAsset.deleteMany({}),
-      db.appVersion.deleteMany({}),
-      db.app.deleteMany({}),
-    ])
-    logger.warn({ ip: request.ip }, '[admin] All apps nuked')
-    return reply.send({ success: true, data: { deleted: 'all' } })
-  })
 }
