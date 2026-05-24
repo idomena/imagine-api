@@ -316,7 +316,6 @@ export async function appsRouter(app: FastifyInstance) {
     {
       preHandler: [app.requireRole([UserRole.CREATOR, UserRole.MODERATOR, UserRole.ADMIN])],
       config:     { rateLimit: SUBMIT_RATE_LIMIT },
-      schema:     { body: { type: 'object', additionalProperties: true } },
     },
     async (request, reply) => {
       const creator  = await appsService.resolveCreator(request.user.sub)
