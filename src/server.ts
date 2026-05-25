@@ -74,6 +74,16 @@ async function start() {
     logger.warn({ err }, '[cleanup] Orphan app cleanup failed — non-fatal')
   }
 
+  // ── Cleanup: remove known test/placeholder apps by slug ───────────────────
+  try {
+    const { count } = await db.app.deleteMany({
+      where: { slug: { in: ['jitter', 'tradingview', 'jitter-1', 'tradingview-1'] } },
+    })
+    if (count > 0) logger.info({ count }, '[cleanup] Removed placeholder apps by slug')
+  } catch (err) {
+    logger.warn({ err }, '[cleanup] Placeholder app removal failed — non-fatal')
+  }
+
   const app = await buildApp()
 
   // ── Background workers (require Redis) ───────────────────────────────────
