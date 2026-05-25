@@ -130,4 +130,20 @@ export const appsRepository = {
       return tx.app.delete({ where: { id } })
     })
   },
+
+  async setTags(appId: string, tagIds: string[]) {
+    return db.$transaction(async tx => {
+      await tx.appTag.deleteMany({ where: { appId } })
+      if (tagIds.length > 0) {
+        await tx.appTag.createMany({
+          data: tagIds.map(tagId => ({ appId, tagId })),
+          skipDuplicates: true,
+        })
+      }
+      return tx.appTag.findMany({
+        where:   { appId },
+        include: { tag: { select: { id: true, name: true, slug: true } } },
+      })
+    })
+  },
 }

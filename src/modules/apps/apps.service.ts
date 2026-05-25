@@ -121,7 +121,18 @@ export const appsService = {
   async update(appId: string, creatorId: string, body: UpdateAppBody) {
     const app = await appsService.get(appId)
     assertCreatorOwns(app, creatorId)
-    return appsRepository.update(appId, body)
+    const { tagIds, ...fields } = body
+    const updated = await appsRepository.update(appId, fields)
+    if (tagIds !== undefined) {
+      await appsRepository.setTags(appId, tagIds)
+    }
+    return updated
+  },
+
+  async setTags(appId: string, creatorId: string, tagIds: string[]) {
+    const app = await appsService.get(appId)
+    assertCreatorOwns(app, creatorId)
+    return appsRepository.setTags(appId, tagIds)
   },
 
   async rename(appId: string, creatorId: string, body: RenameAppBody) {

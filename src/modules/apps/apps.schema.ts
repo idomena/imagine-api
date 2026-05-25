@@ -30,6 +30,11 @@ export const UpdateAppBodySchema = z.object({
   launchUrl:    z.string().url('Invalid URL').optional(),
   primaryColor: z.string().regex(hexColorRegex, 'Must be a hex color like #14b8a6').optional(),
   videoUrl:     z.string().url('Invalid URL').optional(),
+  tagIds:       z.array(z.string().uuid('Invalid tag ID')).max(10).optional(),
+})
+
+export const ScrapeQuerySchema = z.object({
+  url: z.string().url('Invalid URL'),
 })
 
 export const RenameAppBodySchema = z.object({
@@ -51,4 +56,5 @@ export type CreateAppBody  = z.infer<typeof CreateAppBodySchema>
 export type UpdateAppBody  = z.infer<typeof UpdateAppBodySchema>
 export type RenameAppBody  = z.infer<typeof RenameAppBodySchema>
 export type RejectAppBody  = z.infer<typeof RejectAppBodySchema>
-export type ListAppsQuery = z.infer<typeof ListAppsQuerySchema>
+export type ListAppsQuery  = z.infer<typeof ListAppsQuerySchema>
+export type ScrapeQuery    = z.infer<typeof ScrapeQuerySchema>

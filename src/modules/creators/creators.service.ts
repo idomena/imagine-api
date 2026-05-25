@@ -1,14 +1,26 @@
 import { UserRole } from '@prisma/client'
 import { creatorsRepository } from './creators.repository'
-import { ConflictError, NotFoundError } from '../../core/errors'
+import { ConflictError, ForbiddenError, NotFoundError } from '../../core/errors'
 import { sanitizeUser } from '../../lib/types'
-import type { OnboardBody } from './creators.schema'
+import type { OnboardBody, UpdateCreatorBody } from './creators.schema'
 
 // ---------------------------------------------------------------------------
 // Creators service — business logic for creator onboarding.
 // ---------------------------------------------------------------------------
 
 export const creatorsService = {
+  async me(userId: string) {
+    const creator = await creatorsRepository.findByUserIdWithApps(userId)
+    if (!creator) throw new NotFoundError('Creator', userId)
+    return creator
+  },
+
+  async update(userId: string, body: UpdateCreatorBody) {
+    const creator = await creatorsRepository.findByUserId(userId)
+    if (!creator) throw new ForbiddenError('No creator profile found — onboard first')
+    return creatorsRepository.update(userId, body)
+  },
+
   async onboard(userId: string, body: OnboardBody) {
     const user = await creatorsRepository.findUserById(userId)
     if (!user) {

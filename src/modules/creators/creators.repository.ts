@@ -1,4 +1,4 @@
-import { UserRole } from '@prisma/client'
+import { Prisma, UserRole } from '@prisma/client'
 import { db } from '../../core/db'
 
 // ---------------------------------------------------------------------------
@@ -16,6 +16,17 @@ export const creatorsRepository = {
     return db.creator.findUnique({
       where: { userId },
     })
+  },
+
+  async findByUserIdWithApps(userId: string) {
+    return db.creator.findUnique({
+      where:   { userId },
+      include: { user: { select: { id: true, email: true, role: true } } },
+    })
+  },
+
+  async update(userId: string, data: Prisma.CreatorUpdateInput) {
+    return db.creator.update({ where: { userId }, data })
   },
 
   /**

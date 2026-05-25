@@ -11,8 +11,12 @@ import {
   ListAppsQuerySchema,
   RejectAppBodySchema,
   RenameAppBodySchema,
+  ScrapeQuerySchema,
   UpdateAppBodySchema,
 } from './apps.schema'
+import { scrapeUrl } from './app.scraper'
+import { appAssetsRepository } from '../app-assets/app-assets.repository'
+import { cloudinary } from '../../core/cloudinary'
 import { scanApp } from '../../services/security-audit.service'
 import { securityLogger } from '../../services/security-logger.service'
 import { logger } from '../../core/logger'
@@ -194,6 +198,24 @@ export async function appsRouter(app: FastifyInstance) {
     },
   )
 
+  // ── URL metadata scraper ──────────────────────────────────────────────────
+  // POST /api/v1/apps/scrape  — authenticated; returns og/meta fields for a URL
+  app.post(
+    '/scrape',
+    { preHandler: [app.authenticate] },
+    async (request, reply) => {
+      const { url } = ScrapeQuerySchema.parse(request.body)
+      assertHttps(url, 'url')
+      try {
+        const data = await scrapeUrl(url)
+        return reply.send({ success: true, data })
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : 'Failed to fetch URL'
+        return reply.status(422).send({ success: false, error: { message: msg } })
+      }
+    },
+  )
+
   // ── Public ────────────────────────────────────────────────────────────────
 
   app.get('/', async (request, reply) => {
@@ -300,6 +322,48 @@ export async function appsRouter(app: FastifyInstance) {
       const creator = await appsService.resolveCreator(request.user.sub)
       const { id } = request.params as { id: string }
       await appsService.delete(id, creator.id)
+      return reply.status(204).send()
+    },
+  )
+
+  // PUT /:id/tags — replace all tags for an app (creator ownership required)
+  app.put(
+    '/:id/tags',
+    { preHandler: [app.requireRole([UserRole.CREATOR, UserRole.MODERATOR, UserRole.ADMIN])] },
+    async (request, reply) => {
+      const creator    = await appsService.resolveCreator(request.user.sub)
+      const { id }     = request.params as { id: string }
+      const { tagIds } = (request.body as { tagIds?: unknown })
+      const ids        = Array.isArray(tagIds) ? (tagIds as string[]) : []
+      const data       = await appsService.setTags(id, creator.id, ids)
+      return reply.send({ success: true, data })
+    },
+  )
+
+  // DELETE /:id/assets/:assetId — remove a screenshot / banner (creator ownership)
+  app.delete(
+    '/:id/assets/:assetId',
+    { preHandler: [app.authenticate] },
+    async (request, reply) => {
+      const { id: appId, assetId } = request.params as { id: string; assetId: string }
+      const userId                 = request.user.sub
+
+      const asset    = await appAssetsRepository.findById(assetId)
+      if (!asset || asset.appId !== appId) {
+        return reply.status(404).send({ success: false, error: { message: 'Asset not found' } })
+      }
+
+      const creator  = await appsRepository.findCreatorByUserId(userId)
+      const existing = await appsRepository.findById(appId)
+      if (!creator || !existing || creator.id !== existing.creatorId) {
+        void securityLogger.forbiddenAccess(request, 'CREATOR')
+        return reply.status(403).send({ success: false, error: { message: 'Forbidden' } })
+      }
+
+      // Delete from Cloudinary (fire-and-forget — DB delete is authoritative)
+      cloudinary.uploader.destroy(asset.storageKey).catch(() => {})
+
+      await appAssetsRepository.delete(assetId)
       return reply.status(204).send()
     },
   )
