@@ -216,7 +216,21 @@ export async function appsRouter(app: FastifyInstance) {
 
   app.get('/:id', async (request, reply) => {
     const { id } = request.params as { id: string }
-    const data = await appsService.get(id)
+    const data = await db.app.findFirst({
+      where: { OR: [{ id }, { slug: id }] },
+      include: {
+        creator: {
+          include: { user: { select: { email: true } } },
+        },
+        category: true,
+        tags: { include: { tag: true } },
+        assets: { orderBy: { sortOrder: 'asc' } },
+        _count: { select: { launchEvents: true } },
+      },
+    })
+    if (!data) {
+      return reply.status(404).send({ success: false, error: { message: 'App not found' } })
+    }
     return reply.send({ success: true, data })
   })
 
