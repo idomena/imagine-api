@@ -76,10 +76,19 @@ async function start() {
 
   // ── Cleanup: remove known test/placeholder apps by slug ───────────────────
   try {
-    const { count } = await db.app.deleteMany({
-      where: { slug: { in: ['jitter', 'tradingview', 'jitter-1', 'tradingview-1'] } },
+    const slugs = ['jitter', 'tradingview', 'jitter-1', 'tradingview-1']
+    const apps = await db.app.findMany({
+      where:  { slug: { in: slugs } },
+      select: { id: true, name: true },
     })
-    if (count > 0) logger.info({ count }, '[cleanup] Removed placeholder apps by slug')
+    if (apps.length > 0) {
+      const ids = apps.map(a => a.id)
+      // Must remove FK-dependent rows before deleting App (RESTRICT constraints)
+      await db.launchEvent.deleteMany({ where: { appId: { in: ids } } })
+      await db.securityAuditReport.deleteMany({ where: { appId: { in: ids } } })
+      await db.app.deleteMany({ where: { id: { in: ids } } })
+      logger.info({ count: apps.length, names: apps.map(a => a.name) }, '[cleanup] Removed placeholder apps')
+    }
   } catch (err) {
     logger.warn({ err }, '[cleanup] Placeholder app removal failed — non-fatal')
   }
