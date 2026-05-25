@@ -41,8 +41,7 @@ async function start() {
     process.exit(1)
   }
 
-  // ── One-time cleanup: purge apps previously flagged with ADULT_CONTENT ───
-  // Runs on every startup but is a no-op once all affected rows are gone.
+  // ── Cleanup: purge apps flagged with ADULT_CONTENT ──────────────────────
   try {
     const flagged = await db.securityAuditReport.findMany({
       where:  { threats: { string_contains: 'ADULT_CONTENT' } },
@@ -51,10 +50,28 @@ async function start() {
     if (flagged.length > 0) {
       const ids = flagged.map(r => r.appId)
       const { count } = await db.app.deleteMany({ where: { id: { in: ids } } })
-      logger.info({ count, ids }, '[cleanup] Purged adult-content flagged apps from database')
+      logger.info({ count, ids }, '[cleanup] Purged adult-content flagged apps')
     }
   } catch (err) {
-    logger.warn({ err }, '[cleanup] Adult content purge failed — non-fatal, continuing startup')
+    logger.warn({ err }, '[cleanup] Adult content purge failed — non-fatal')
+  }
+
+  // ── Cleanup: delete orphan apps whose creator has no linked user ─────────
+  try {
+    const orphans = await db.$queryRaw<Array<{ id: string; name: string }>>`
+      SELECT a.id, a.name
+      FROM "App" a
+      LEFT JOIN "Creator" c ON c.id = a."creatorId"
+      LEFT JOIN "User" u ON u.id = c."userId"
+      WHERE u.id IS NULL
+    `
+    if (orphans.length > 0) {
+      const ids = orphans.map(a => a.id)
+      await db.app.deleteMany({ where: { id: { in: ids } } })
+      logger.info({ count: ids.length, names: orphans.map(a => a.name) }, '[cleanup] Deleted orphan apps')
+    }
+  } catch (err) {
+    logger.warn({ err }, '[cleanup] Orphan app cleanup failed — non-fatal')
   }
 
   const app = await buildApp()
