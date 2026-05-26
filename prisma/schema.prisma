@@ -138,9 +138,11 @@ model App {
   launchUrl String?
 
   // Denormalized from assets for fast list rendering
-  iconUrl      String?
-  primaryColor String?   // hex e.g. "#14b8a6" — used for the live page header background
-  videoUrl     String?   // short promo video URL
+  iconUrl       String?
+  primaryColor  String?    // hex e.g. "#14b8a6" — used for the live page header background
+  videoUrl      String?    // short promo video URL
+  screenshots   String[]   // public screenshot URLs (max 8)
+  agreedToTerms Boolean    @default(false)
 
   categoryId String?
   category   Category? @relation(fields: [categoryId], references: [id])
