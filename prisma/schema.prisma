@@ -146,6 +146,9 @@ model App {
   screenshots   String[]   // public screenshot URLs (max 8)
   agreedToTerms Boolean    @default(false)
 
+  themePreference String?  // "dark" | "light" | "mesh" | hex | image URL
+  logoUrl         String?  // high-res custom logo URL (separate from iconUrl)
+
   categoryId String?
   category   Category? @relation(fields: [categoryId], references: [id])
 

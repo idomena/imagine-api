@@ -25,15 +25,17 @@ export const CreateAppBodySchema = z.object({
 
 // Only mutable fields — status is never accepted from the client
 export const UpdateAppBodySchema = z.object({
-  name:         z.string().min(1).max(100).optional(),
-  tagline:      z.string().min(1).max(200).optional(),
-  description:  z.string().min(1).max(5000).optional(),
-  categoryId:   z.string().uuid('Invalid category ID').nullable().optional(),
-  launchUrl:    z.string().url('Invalid URL').optional(),
-  primaryColor: z.string().regex(hexColorRegex, 'Must be a hex color like #14b8a6').optional(),
-  videoUrl:     z.string().url('Invalid URL').optional(),
-  screenshots:  z.array(z.string().url('Invalid screenshot URL')).max(8).optional(),
-  tagIds:       z.array(z.string().uuid('Invalid tag ID')).max(10).optional(),
+  name:             z.string().min(1).max(100).optional(),
+  tagline:          z.string().min(1).max(200).optional(),
+  description:      z.string().min(1).max(5000).optional(),
+  categoryId:       z.string().uuid('Invalid category ID').nullable().optional(),
+  launchUrl:        z.string().url('Invalid URL').optional(),
+  primaryColor:     z.string().regex(hexColorRegex, 'Must be a hex color like #14b8a6').optional(),
+  videoUrl:         z.string().url('Invalid URL').optional(),
+  screenshots:      z.array(z.string().url('Invalid screenshot URL')).max(8).optional(),
+  tagIds:           z.array(z.string().uuid('Invalid tag ID')).max(10).optional(),
+  themePreference:  z.string().max(500).nullable().optional(),
+  logoUrl:          z.string().url('Invalid logo URL').nullable().optional(),
 })
 
 export const ScrapeQuerySchema = z.object({
