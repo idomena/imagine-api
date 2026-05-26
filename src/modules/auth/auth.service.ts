@@ -20,8 +20,10 @@ const SALT_ROUNDS = 12
 
 export const authService = {
   async register(app: FastifyInstance, body: RegisterBody) {
-    const existing = await authRepository.findByEmail(body.email)
-    if (existing) {
+    // Check against ALL records (including soft-deleted) to avoid a raw DB
+    // unique-constraint violation which would bubble up as a 500.
+    const exists = await authRepository.emailExists(body.email)
+    if (exists) {
       throw new ConflictError('Email already in use')
     }
 

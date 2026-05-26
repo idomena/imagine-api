@@ -13,6 +13,16 @@ export const authRepository = {
     })
   },
 
+  /**
+   * Check whether ANY user with this email exists (including soft-deleted).
+   * Used only for the registration uniqueness guard to avoid a raw DB constraint
+   * violation when the email belongs to a soft-deleted account.
+   */
+  async emailExists(email: string): Promise<boolean> {
+    const user = await db.user.findUnique({ where: { email }, select: { id: true } })
+    return user !== null
+  },
+
   async findById(id: string) {
     return db.user.findFirst({
       where:   { id, deletedAt: null },
