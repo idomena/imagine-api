@@ -45,6 +45,7 @@ async function start() {
   for (const sql of [
     `ALTER TABLE "App"     ADD COLUMN IF NOT EXISTS "themePreference" TEXT`,
     `ALTER TABLE "App"     ADD COLUMN IF NOT EXISTS "logoUrl"         TEXT`,
+    `ALTER TABLE "App"     ADD COLUMN IF NOT EXISTS "logoColor"       TEXT`,
     `ALTER TABLE "Creator" ADD COLUMN IF NOT EXISTS "accentColor"     TEXT`,
     `ALTER TABLE "Creator" ADD COLUMN IF NOT EXISTS "bannerUrl"       TEXT`,
   ]) {

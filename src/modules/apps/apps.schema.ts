@@ -36,6 +36,7 @@ export const UpdateAppBodySchema = z.object({
   tagIds:           z.array(z.string().uuid('Invalid tag ID')).max(10).optional(),
   themePreference:  z.string().max(500).nullable().optional(),
   logoUrl:          z.string().url('Invalid logo URL').nullable().optional(),
+  logoColor:        z.string().regex(hexColorRegex, 'Must be a hex color like #6366f1').nullable().optional(),
 })
 
 export const ScrapeQuerySchema = z.object({
