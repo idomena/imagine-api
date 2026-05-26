@@ -14,6 +14,8 @@ export const UpdateCreatorBodySchema = z.object({
   bio:         z.string().max(500).nullable().optional(),
   website:     z.string().url('Invalid website URL').nullable().optional(),
   avatarUrl:   z.string().url('Invalid avatar URL').nullable().optional(),
+  accentColor: z.string().regex(/^#[0-9a-fA-F]{6}$/, 'Must be a hex color like #14b8a6').nullable().optional(),
+  bannerUrl:   z.string().url('Invalid banner URL').nullable().optional(),
 })
 
 export type OnboardBody        = z.infer<typeof OnboardBodySchema>

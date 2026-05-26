@@ -115,6 +115,8 @@ model Creator {
   bio         String?
   website     String?
   avatarUrl   String?
+  accentColor String?  // hex e.g. "#14b8a6" — used for profile page theming
+  bannerUrl   String?  // public URL for profile banner image
   verified    Boolean  @default(false)
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
