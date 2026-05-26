@@ -1,7 +1,6 @@
 import { createHash } from 'crypto'
 import type { FastifyInstance } from 'fastify'
 import { AppStatus, UserRole } from '@prisma/client'
-import { Prisma } from '@prisma/client'
 import { appsService } from './apps.service'
 import { appsRepository } from './apps.repository'
 import { launchEventsRepository } from '../launch-events/launch-events.repository'
@@ -158,26 +157,26 @@ export async function appsRouter(app: FastifyInstance) {
         return reply.send({ success: true, data: { apps, byApp: {}, totals: {}, allTimeTotals: {} } })
       }
 
-      // 30-day daily breakdown — Prisma stores table as "LaunchEvent" (PascalCase, no @@map)
-      // and columns as camelCase ("appId", "createdAt") — must quote in raw SQL
-      type RawRow = { appId: string; date: string; count: bigint }
-      const rows = await db.$queryRaw<RawRow[]>(
-        Prisma.sql`
-          SELECT "appId",
-                 TO_CHAR(DATE("createdAt" AT TIME ZONE 'UTC'), 'YYYY-MM-DD') AS date,
-                 COUNT(*)::bigint AS count
-          FROM   "LaunchEvent"
-          WHERE  "appId" = ANY(${appIds}::uuid[])
-            AND  "createdAt" >= ${since}
-          GROUP  BY "appId", DATE("createdAt" AT TIME ZONE 'UTC')
-          ORDER  BY date ASC
-        `,
-      )
+      // Fetch events via ORM — avoids uuid/text cast issues with raw SQL params
+      const events = await db.launchEvent.findMany({
+        where:   { appId: { in: appIds }, createdAt: { gte: since } },
+        select:  { appId: true, createdAt: true },
+        orderBy: { createdAt: 'asc' },
+      })
+
+      // Group by app and date in memory
+      const byAppMap: Record<string, Record<string, number>> = {}
+      for (const ev of events) {
+        const date = ev.createdAt.toISOString().slice(0, 10)
+        if (!byAppMap[ev.appId]) byAppMap[ev.appId] = {}
+        byAppMap[ev.appId]![date] = (byAppMap[ev.appId]![date] ?? 0) + 1
+      }
 
       const byApp: Record<string, Array<{ date: string; views: number }>> = {}
-      for (const row of rows) {
-        if (!byApp[row.appId]) byApp[row.appId] = []
-        byApp[row.appId]!.push({ date: row.date, views: Number(row.count) })
+      for (const [appId, dateMap] of Object.entries(byAppMap)) {
+        byApp[appId] = Object.entries(dateMap)
+          .map(([date, views]) => ({ date, views }))
+          .sort((a, b) => a.date.localeCompare(b.date))
       }
 
       const totals: Record<string, number> = {}
@@ -185,7 +184,7 @@ export async function appsRouter(app: FastifyInstance) {
         totals[appId] = series.reduce((sum, s) => sum + s.views, 0)
       }
 
-      // All-time totals (counts every LaunchEvent ever, not just 30 days)
+      // All-time totals
       const allTimeCounts = await db.launchEvent.groupBy({
         by:    ['appId'],
         where: { appId: { in: appIds } },
