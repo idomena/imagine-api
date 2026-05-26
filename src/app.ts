@@ -35,6 +35,7 @@ import { promotionsRouter }     from './modules/promotions/promotions.router'
 import { auditRouter }          from './modules/audit/audit.router'
 import { appScreenshotsRouter } from './modules/app-assets/app-screenshots.router.secure'
 import { appIconRouter }        from './modules/app-assets/app-icon.router.secure'
+import { appLogoRouter }        from './modules/app-assets/app-logo.router'
 import { appVideoRouter }       from './modules/app-assets/app-video.router'
 import { reviewsRouter }        from './modules/reviews/reviews.router'
 import { adminRouter }          from './modules/admin/admin.router'
@@ -158,6 +159,7 @@ export async function buildApp() {
   await app.register(appAssetsRouter,       { prefix: '/api/v1/apps' })
   await app.register(appScreenshotsRouter,  { prefix: '/api/v1/apps' })
   await app.register(appIconRouter,         { prefix: '/api/v1/apps' })
+  await app.register(appLogoRouter,         { prefix: '/api/v1/apps' })
   await app.register(appVideoRouter,        { prefix: '/api/v1/apps' })
   await app.register(reviewsRouter,         { prefix: '/api/v1/apps' })
   await app.register(favoritesRouter,    { prefix: '/api/v1/favorites' })
