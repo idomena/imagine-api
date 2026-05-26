@@ -155,27 +155,29 @@ export async function appsRouter(app: FastifyInstance) {
       }
 
       if (appIds.length === 0) {
-        return reply.send({ success: true, data: { apps, byApp: {}, totals: {} } })
+        return reply.send({ success: true, data: { apps, byApp: {}, totals: {}, allTimeTotals: {} } })
       }
 
-      type RawRow = { app_id: string; date: string; count: bigint }
+      // 30-day daily breakdown — Prisma stores table as "LaunchEvent" (PascalCase, no @@map)
+      // and columns as camelCase ("appId", "createdAt") — must quote in raw SQL
+      type RawRow = { appId: string; date: string; count: bigint }
       const rows = await db.$queryRaw<RawRow[]>(
         Prisma.sql`
-          SELECT app_id,
-                 TO_CHAR(DATE(created_at AT TIME ZONE 'UTC'), 'YYYY-MM-DD') AS date,
+          SELECT "appId",
+                 TO_CHAR(DATE("createdAt" AT TIME ZONE 'UTC'), 'YYYY-MM-DD') AS date,
                  COUNT(*)::bigint AS count
-          FROM   launch_events
-          WHERE  app_id = ANY(${appIds}::uuid[])
-            AND  created_at >= ${since}
-          GROUP  BY app_id, DATE(created_at AT TIME ZONE 'UTC')
+          FROM   "LaunchEvent"
+          WHERE  "appId" = ANY(${appIds}::uuid[])
+            AND  "createdAt" >= ${since}
+          GROUP  BY "appId", DATE("createdAt" AT TIME ZONE 'UTC')
           ORDER  BY date ASC
         `,
       )
 
       const byApp: Record<string, Array<{ date: string; views: number }>> = {}
       for (const row of rows) {
-        if (!byApp[row.app_id]) byApp[row.app_id] = []
-        byApp[row.app_id]!.push({ date: row.date, views: Number(row.count) })
+        if (!byApp[row.appId]) byApp[row.appId] = []
+        byApp[row.appId]!.push({ date: row.date, views: Number(row.count) })
       }
 
       const totals: Record<string, number> = {}
@@ -183,7 +185,18 @@ export async function appsRouter(app: FastifyInstance) {
         totals[appId] = series.reduce((sum, s) => sum + s.views, 0)
       }
 
-      return reply.send({ success: true, data: { apps, byApp, totals, since: since.toISOString() } })
+      // All-time totals (counts every LaunchEvent ever, not just 30 days)
+      const allTimeCounts = await db.launchEvent.groupBy({
+        by:    ['appId'],
+        where: { appId: { in: appIds } },
+        _count: { id: true },
+      })
+      const allTimeTotals: Record<string, number> = {}
+      for (const row of allTimeCounts) {
+        allTimeTotals[row.appId] = row._count.id
+      }
+
+      return reply.send({ success: true, data: { apps, byApp, totals, allTimeTotals, since: since.toISOString() } })
     },
   )
 
