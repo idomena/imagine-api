@@ -21,6 +21,7 @@ export const CreateAppBodySchema = z.object({
   videoUrl:      z.string().url('Invalid URL').optional(),
   screenshots:   z.array(z.string().url('Invalid screenshot URL')).max(8).optional(),
   agreedToTerms: z.boolean().optional(),
+  anonymous:     z.boolean().optional(),
 })
 
 // Only mutable fields — status is never accepted from the client
@@ -37,6 +38,7 @@ export const UpdateAppBodySchema = z.object({
   themePreference:  z.string().max(500).nullable().optional(),
   logoUrl:          z.string().url('Invalid logo URL').nullable().optional(),
   logoColor:        z.string().regex(hexColorRegex, 'Must be a hex color like #6366f1').nullable().optional(),
+  anonymous:        z.boolean().optional(),
 })
 
 export const ScrapeQuerySchema = z.object({

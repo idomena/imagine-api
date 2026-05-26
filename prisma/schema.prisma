@@ -149,6 +149,7 @@ model App {
   themePreference String?  // "dark" | "light" | "mesh" | hex | image URL
   logoUrl         String?  // high-res custom logo URL (separate from iconUrl)
   logoColor       String?  // hex color for the logo badge background (e.g. "#6366f1")
+  anonymous       Boolean  @default(false) // hide creator identity on public page
 
   categoryId String?
   category   Category? @relation(fields: [categoryId], references: [id])
