@@ -38,6 +38,7 @@ import { appIconRouter }        from './modules/app-assets/app-icon.router.secur
 import { appVideoRouter }       from './modules/app-assets/app-video.router'
 import { reviewsRouter }        from './modules/reviews/reviews.router'
 import { adminRouter }          from './modules/admin/admin.router'
+import { analyticsRouter }      from './modules/analytics/analytics.router'
 
 // ---------------------------------------------------------------------------
 // Screenshots folder
@@ -166,6 +167,7 @@ export async function buildApp() {
   await app.register(promotionsRouter,   { prefix: '/api/v1/promotions' })
   await app.register(auditRouter,        { prefix: '/api/v1/audit' })
   await app.register(adminRouter)
+  await app.register(analyticsRouter, { prefix: '/api/v1' })
 
   return app
 }

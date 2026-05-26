@@ -140,13 +140,14 @@ export async function appsRouter(app: FastifyInstance) {
       since.setDate(since.getDate() - 30)
 
       let appIds: string[] = []
-      let apps: Array<{ id: string; name: string; slug: string; iconUrl: string | null; status: string; launchUrl: string | null }> = []
+      let apps: Array<{ id: string; name: string; tagline: string; slug: string; iconUrl: string | null; status: string; launchUrl: string | null; createdAt: Date; publishedAt: Date | null }> = []
 
       try {
         const creator = await appsService.resolveCreator(request.user.sub)
         apps = await db.app.findMany({
-          where:  { creatorId: creator.id },
-          select: { id: true, name: true, slug: true, iconUrl: true, status: true, launchUrl: true },
+          where:   { creatorId: creator.id },
+          select:  { id: true, name: true, tagline: true, slug: true, iconUrl: true, status: true, launchUrl: true, createdAt: true, publishedAt: true },
+          orderBy: { createdAt: 'desc' },
         })
         appIds = apps.map(a => a.id)
       } catch {
