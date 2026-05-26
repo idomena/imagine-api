@@ -1,5 +1,6 @@
 import type { FastifyInstance } from 'fastify'
 import { authService } from './auth.service'
+import { authRepository } from './auth.repository'
 import {
   GoogleAuthBodySchema,
   LoginBodySchema,
@@ -8,6 +9,7 @@ import {
 } from './auth.schema'
 import { AUTH_RATE_LIMIT } from '../../plugins/rate-limit.plugin'
 import { securityLogger } from '../../services/security-logger.service'
+import { hashToken } from '../../lib/tokens'
 
 // ---------------------------------------------------------------------------
 // Auth router — updated with:
@@ -68,6 +70,27 @@ export async function authRouter(app: FastifyInstance) {
       const data = await authService.googleAuth(app, body)
       void securityLogger.loginSuccess(request, data.user.id)
       return reply.send({ success: true, data })
+    },
+  )
+
+  // ── Logout ────────────────────────────────────────────────────────────────
+  app.post(
+    '/logout',
+    {
+      schema: {
+        body: {
+          type: 'object',
+          properties: { refreshToken: { type: 'string' } },
+          additionalProperties: true,
+        },
+      },
+    },
+    async (request, reply) => {
+      const body = request.body as { refreshToken?: string } | null
+      if (body?.refreshToken) {
+        await authRepository.revokeRefreshToken(hashToken(body.refreshToken))
+      }
+      return reply.send({ success: true })
     },
   )
 

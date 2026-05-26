@@ -23,16 +23,28 @@ const MAX_STRING_LENGTH = 50_000      // 50 KB per field
 const MAX_JSON_DEPTH    = 10          // max nesting levels
 const MAX_ARRAY_LENGTH  = 1_000       // max items in any array
 
-// ── Patterns that indicate injection attempts ────────────────────────────────
-const INJECTION_PATTERNS: RegExp[] = [
+// ── Patterns that apply to every string value ────────────────────────────────
+const UNIVERSAL_PATTERNS: RegExp[] = [
   /(\b(SELECT|INSERT|UPDATE|DELETE|DROP|TRUNCATE|ALTER|CREATE|EXEC|UNION|CAST|CONVERT)\b.*\b(FROM|INTO|TABLE|WHERE|SET)\b)/i,
   /<script[\s\S]*?>[\s\S]*?<\/script>/i,
   /javascript\s*:/i,
   /vbscript\s*:/i,
-  /on\w+\s*=\s*["']?[^"'>]*/i,   // event handlers: onclick=, onload=, etc.
   /\x00/,                          // null bytes
   /\.\.\//,                        // path traversal
 ]
+
+// ── Patterns only meaningful in HTML attribute context ────────────────────────
+// Skipped for URL-shaped values: Google OAuth picture URLs contain query params
+// (e.g. "…=s96-c") that match the event-handler pattern but are not XSS.
+const HTML_CONTEXT_PATTERNS: RegExp[] = [
+  /on\w+\s*=\s*["']?[^"'>]*/i,   // event handlers: onclick=, onload=, etc.
+]
+
+function patternsFor(value: string): RegExp[] {
+  return /^https?:\/\//i.test(value)
+    ? UNIVERSAL_PATTERNS
+    : [...UNIVERSAL_PATTERNS, ...HTML_CONTEXT_PATTERNS]
+}
 
 const DANGEROUS_KEYS = new Set(['__proto__', 'constructor', 'prototype'])
 
@@ -48,7 +60,7 @@ function scanValue(value: unknown, depth = 0, path = 'body'): void {
     if (value.length > MAX_STRING_LENGTH) {
       throw new BadRequestError(`Field '${path}' exceeds maximum length of ${MAX_STRING_LENGTH} characters`)
     }
-    for (const pattern of INJECTION_PATTERNS) {
+    for (const pattern of patternsFor(value)) {
       if (pattern.test(value)) {
         logger.warn({ path, pattern: pattern.toString() }, '[sanitise] Injection pattern detected in request')
         throw new BadRequestError(`Field '${path}' contains forbidden content`)
@@ -82,7 +94,7 @@ function scanValue(value: unknown, depth = 0, path = 'body'): void {
 function scanUrlParams(obj: Record<string, unknown>, location: 'params' | 'query'): void {
   for (const [key, value] of Object.entries(obj)) {
     if (typeof value === 'string') {
-      for (const pattern of INJECTION_PATTERNS) {
+      for (const pattern of patternsFor(value)) {
         if (pattern.test(value)) {
           logger.warn({ key, location }, '[sanitise] Injection pattern in URL')
           throw new BadRequestError(`${location}.${key} contains forbidden content`)
