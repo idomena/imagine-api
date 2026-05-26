@@ -41,18 +41,20 @@ async function start() {
     process.exit(1)
   }
 
-  // ── Schema: add columns that may be missing (idempotent) ─────────────────
-  try {
-    await db.$executeRawUnsafe(`
-      ALTER TABLE "App" ADD COLUMN IF NOT EXISTS "themePreference" TEXT;
-      ALTER TABLE "App" ADD COLUMN IF NOT EXISTS "logoUrl" TEXT;
-      ALTER TABLE "Creator" ADD COLUMN IF NOT EXISTS "accentColor" TEXT;
-      ALTER TABLE "Creator" ADD COLUMN IF NOT EXISTS "bannerUrl" TEXT;
-    `)
-    logger.info('Schema columns verified')
-  } catch (err) {
-    logger.warn({ err }, 'Schema column check failed — non-fatal, continuing')
+  // ── Schema: add columns that may be missing (idempotent, one per call) ───
+  for (const sql of [
+    `ALTER TABLE "App"     ADD COLUMN IF NOT EXISTS "themePreference" TEXT`,
+    `ALTER TABLE "App"     ADD COLUMN IF NOT EXISTS "logoUrl"         TEXT`,
+    `ALTER TABLE "Creator" ADD COLUMN IF NOT EXISTS "accentColor"     TEXT`,
+    `ALTER TABLE "Creator" ADD COLUMN IF NOT EXISTS "bannerUrl"       TEXT`,
+  ]) {
+    try {
+      await db.$executeRawUnsafe(sql)
+    } catch (err) {
+      logger.warn({ err, sql }, 'Schema column migration failed')
+    }
   }
+  logger.info('Schema columns verified')
 
   // ── Cleanup: purge apps flagged with ADULT_CONTENT ──────────────────────
   try {
