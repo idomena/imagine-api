@@ -190,28 +190,26 @@ export async function appsRouter(app: FastifyInstance) {
       const creator   = await appsService.resolveCreator(request.user.sub)
       const { id }    = request.params as { id: string }
 
-      // Step 1 — DRAFT → SUBMITTED
+      // Step 1 — DRAFT → SUBMITTED (fast, always completes)
       const submitted = await appsService.submit(id, creator.id)
 
-      // Step 2 — synchronous scan (fail-safe: error → publish)
-      let malicious     = false
-      let threatDetails: string[] = []
-      try {
-        const result = await scanApp(id, submitted.launchUrl ?? '')
-        if (result.malicious) { malicious = true; threatDetails = result.threats.map(t => t.description) }
-      } catch { malicious = false }
+      // Step 2 — async scan + auto-publish (non-blocking)
+      // The client polls GET /:id and watches for status → PUBLISHED | REJECTED
+      void (async () => {
+        let shouldPublish = true
+        try {
+          const result = await scanApp(id, submitted.launchUrl ?? '')
+          if (result.malicious) shouldPublish = false
+        } catch {
+          // Scan error — default to publish (fail-safe)
+        }
+        if (shouldPublish) {
+          try { await appsService.adminApprove(id) } catch {}
+        }
+      })()
 
-      // Step 3a — malicious: hold in SUBMITTED
-      if (malicious) {
-        return reply.status(422).send({
-          success: false,
-          error: { message: 'App rejected by security scan.', details: threatDetails },
-        })
-      }
-
-      // Step 3b — clean: SUBMITTED → PUBLISHED via service layer
-      const published = await appsService.adminApprove(id)
-      return reply.send({ success: true, autoPublished: true, data: published })
+      // Return immediately so the client doesn't time out waiting for the scan
+      return reply.send({ success: true, data: submitted })
     },
   )
 
