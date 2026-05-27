@@ -1,9 +1,11 @@
 // ---------------------------------------------------------------------------
-// URL metadata scraper — no external deps, uses Node's built-in fetch.
-// Extracts Open Graph / meta tags to pre-populate the submit form.
+// URL metadata scraper — fast, streaming, head-only.
+// Reads only until </head> (or 48 KB) to avoid downloading full pages.
 // ---------------------------------------------------------------------------
 
-const UA = 'Mozilla/5.0 (compatible; ImagineBot/1.0; +https://imaginehq.services)'
+const UA             = 'Mozilla/5.0 (compatible; ImagineBot/1.0; +https://imaginehq.services)'
+const TIMEOUT_MS     = 5_000   // 5 s — fail fast on slow or unresponsive sites
+const MAX_HEAD_BYTES = 48_000  // 48 KB — safely covers any <head> section
 
 function resolveUrl(href: string, base: string): string {
   try { return new URL(href, base).href } catch { return href }
@@ -16,7 +18,7 @@ function extractMeta(html: string, names: string[]): string | null {
       `|<meta[^>]+content=["']([^"']{1,2000})["'][^>]+(?:name|property)=["']${name}["']`,
       'i',
     )
-    const m = html.match(re)
+    const m   = html.match(re)
     const val = (m?.[1] || m?.[2] || '').trim()
     if (val) return val
   }
@@ -51,31 +53,61 @@ export interface ScrapeResult {
 }
 
 export async function scrapeUrl(rawUrl: string): Promise<ScrapeResult> {
-  const url = rawUrl.startsWith('http') ? rawUrl : `https://${rawUrl}`
+  const url        = rawUrl.startsWith('http') ? rawUrl : `https://${rawUrl}`
+  const controller = new AbortController()
+  const timer      = setTimeout(() => controller.abort(), TIMEOUT_MS)
 
-  const res = await fetch(url, {
-    headers:  { 'User-Agent': UA },
-    signal:   AbortSignal.timeout(8_000),
-    redirect: 'follow',
-  })
+  let html     = ''
+  let finalUrl = url
 
-  if (!res.ok) throw new Error(`Site returned ${res.status}`)
+  try {
+    const res = await fetch(url, {
+      headers: {
+        'User-Agent':      UA,
+        'Accept':          'text/html,application/xhtml+xml',
+        'Accept-Language': 'en-US,en;q=0.9',
+      },
+      signal:   controller.signal,
+      redirect: 'follow',
+    })
 
-  const html     = await res.text()
-  const finalUrl = res.url || url
+    finalUrl = res.url || url
+    if (!res.ok) throw new Error(`Site returned ${res.status}`)
 
-  const ogTitle  = extractMeta(html, ['og:title', 'twitter:title'])
+    // Stream response — stop as soon as we see </head> or hit 48 KB.
+    // This avoids downloading megabyte-sized pages just to read a handful of
+    // <meta> tags that always appear near the top of the document.
+    const reader  = res.body?.getReader()
+    const decoder = new TextDecoder()
+
+    if (reader) {
+      let bytes = 0
+      while (bytes < MAX_HEAD_BYTES) {
+        const { done, value } = await reader.read()
+        if (done || !value) break
+        html  += decoder.decode(value, { stream: true })
+        bytes += value.byteLength
+        if (html.includes('</head>') || html.includes('</HEAD>')) break
+      }
+      reader.cancel().catch(() => {})
+    } else {
+      html = await res.text()
+    }
+  } finally {
+    clearTimeout(timer)
+  }
+
+  const ogTitle   = extractMeta(html, ['og:title', 'twitter:title'])
   const htmlTitle = html.match(/<title[^>]*>([^<]{1,200})<\/title>/i)?.[1]?.trim() ?? null
-  const siteName = extractMeta(html, ['og:site_name', 'application-name'])
-  const ogDesc   = extractMeta(html, ['og:description', 'twitter:description'])
-  const metaDesc = extractMeta(html, ['description'])
-  const ogImage  = extractMeta(html, ['og:image', 'twitter:image:src', 'twitter:image'])
+  const siteName  = extractMeta(html, ['og:site_name', 'application-name'])
+  const ogDesc    = extractMeta(html, ['og:description', 'twitter:description'])
+  const metaDesc  = extractMeta(html, ['description'])
+  const ogImage   = extractMeta(html, ['og:image', 'twitter:image:src', 'twitter:image'])
 
   const hostname = new URL(finalUrl).hostname.replace(/^www\./, '')
   const name     = first(ogTitle, htmlTitle, siteName) ?? hostname
   const rawDesc  = first(ogDesc, metaDesc) ?? ''
 
-  // First sentence or 120 chars as the tagline
   const tagline = (rawDesc.split(/\.\s/)[0] ?? rawDesc).replace(/\s+/g, ' ').trim().slice(0, 120)
     || `Explore ${name}`
 
